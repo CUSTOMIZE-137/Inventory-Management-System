@@ -7,9 +7,18 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.models import Base, Item, Location, StockBalance, StockTransaction, UnitOfMeasure, User
+from app.models import (
+    Base,
+    Item,
+    Location,
+    StockBalance,
+    StockTransaction,
+    UnitOfMeasure,
+    User,
+)
 from app.schemas import MovementInput
 from app.services.inventory import post_stock_transaction
 
@@ -23,10 +32,16 @@ def postgres_engine():
     if not TEST_DATABASE_URL:
         pytest.skip("Set TEST_DATABASE_URL to run PostgreSQL integration tests")
 
-    engine = create_engine(TEST_DATABASE_URL, pool_size=5)
+    engine = create_engine(
+        TEST_DATABASE_URL, pool_size=5, connect_args={"connect_timeout": 3}
+    )
     schema_name = f"inventory_test_{uuid4().hex}"
-    with engine.begin() as connection:
-        connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+    except OperationalError as exc:
+        engine.dispose()
+        pytest.skip(f"PostgreSQL server is not reachable: {exc}")
     isolated_engine = engine.execution_options(
         schema_translate_map={None: schema_name}
     )
@@ -106,7 +121,5 @@ def test_concurrent_issues_cannot_overdraw_stock(postgres_engine):
         )
         assert balance is not None
         assert balance.quantity == Decimal("1.000")
-        transactions = list(
-            session.scalars(select(StockTransaction.id))
-        )
+        transactions = list(session.scalars(select(StockTransaction.id)))
         assert len(transactions) == 1

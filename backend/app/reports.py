@@ -8,8 +8,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.dependencies import require_permission
 from app.db import get_db
+from app.dependencies import require_permission
 from app.models import Item, StockBalance, StockMovement, StockTransaction, User
 
 
@@ -30,10 +30,11 @@ def low_stock_report(
 def valuation_report(
     session: Session = Depends(get_db),
     _user: User = Depends(require_permission("reports:read")),
-) -> dict[str, Decimal | str]:
+) -> dict[str, object]:
     return {
         "total_value": _total_valuation(session),
         "valuation_method": "standard_cost",
+        "items": _valuation_rows(session),
     }
 
 
@@ -61,7 +62,7 @@ def export_report(
     elif report_name == "consumption":
         rows = _consumption_rows(session, days)
     elif report_name == "valuation":
-        rows = [{"total_value": _total_valuation(session)}]
+        rows = _valuation_rows(session) or [{"total_value": _total_valuation(session)}]
     else:
         raise HTTPException(status_code=404, detail="Report not found")
 
@@ -75,9 +76,16 @@ def export_report(
             "quantity_consumed",
             "average_daily_consumed",
         ],
-        "valuation": ["total_value"],
+        "valuation": [
+            "item_id",
+            "sku",
+            "name",
+            "on_hand",
+            "unit_cost",
+            "total_value",
+        ],
     }[report_name]
-    writer = csv.DictWriter(output, fieldnames=fields)
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for row in rows:
         writer.writerow({key: _csv_safe(value) for key, value in row.items()})
@@ -155,10 +163,31 @@ def _consumption_rows(
     return rows
 
 
+def _valuation_rows(session: Session) -> list[dict[str, object]]:
+    query = (
+        select(
+            Item.id.label("item_id"),
+            Item.sku,
+            Item.name,
+            Item.unit_cost,
+            func.coalesce(func.sum(StockBalance.quantity), 0).label("on_hand"),
+            func.coalesce(func.sum(StockBalance.quantity * Item.unit_cost), 0).label(
+                "total_value"
+            ),
+        )
+        .outerjoin(StockBalance, StockBalance.item_id == Item.id)
+        .where(Item.is_active.is_(True))
+        .group_by(Item.id)
+        .order_by(Item.name, Item.id)
+    )
+    return [dict(row._mapping) for row in session.execute(query)]
+
+
 def _total_valuation(session: Session) -> Decimal:
     value = session.scalar(
         select(func.coalesce(func.sum(StockBalance.quantity * Item.unit_cost), 0))
         .join(Item, Item.id == StockBalance.item_id)
+        .where(Item.is_active.is_(True))
     )
     return value or Decimal("0")
 
