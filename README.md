@@ -1,6 +1,6 @@
 # Inventory Management System
 
-A FastAPI and PostgreSQL backend foundation for auditable, multi-location inventory. The implementation includes catalog and location endpoints, user and role management, JWT authentication with rate limiting, purchase order receiving, a staged requisition workflow with partial quantity approvals, stock receipts/issues/adjustments/transfers, audit movement queries, idempotency keys, and low-stock, valuation, and consumption reports.
+A FastAPI and PostgreSQL backend foundation for auditable, multi-location inventory. The implementation includes catalog and location endpoints, item-specific unit conversions, user and role management, JWT authentication with rate limiting, purchase order receiving, in-kind donations, daily care dispensing, stock-take reconciliation, a staged requisition workflow with partial quantity approvals, stock receipts/issues/adjustments/transfers, audit movement queries, idempotency keys, and low-stock, valuation, consumption, and monthly-ledger reports.
 
 ## Architecture
 
@@ -10,6 +10,7 @@ A FastAPI and PostgreSQL backend foundation for auditable, multi-location invent
 - **Authorization:** Roles map to explicit permissions in `user_roles`, `roles`, `permissions`, and `role_permissions`.
 - **Audit:** Posted stock transactions and per-location balance changes are stored separately. The PostgreSQL migration adds triggers that reject update, delete, and truncate operations on stock audit tables.
 - **Approvals:** Requisitions progress through supervisor review, store-manager approval (supporting partial line quantity approvals), dispatch, and requester receipt confirmation. Restricted or approval-required items cannot be issued through the generic issue route.
+- **Specialized stock workflows:** Donation batches, daily-care logs, and stock takes retain their source records and link to canonical receipt, issue, or adjustment transactions. The Donations in Kind screen summarizes receipts by catalog item and month for a selected year, using each item's base unit; historical workbook figures are not imported. Item-specific unit conversions normalize quantities to each item's base unit before posting.
 
 ## Run locally
 
@@ -116,6 +117,7 @@ All endpoints except login, health, and readiness require a bearer token. Permis
 | `GET`, `POST`, `PATCH` | `/api/users`, `/api/users/{id}`, `/api/roles` | `users:manage`; user & role management |
 | `GET`, `POST`, `PATCH` | `/api/items`, `/api/items/{id}` | `catalog:read`, `catalog:write` |
 | `GET`, `POST` | `/api/categories`, `/api/departments`, `/api/units` | `catalog:read`, `catalog:write` |
+| `GET`, `POST` | `/api/unit-conversions` | `catalog:read`, `catalog:write`; item-specific UoM conversion |
 | `GET`, `POST`, `PATCH` | `/api/vendors`, `/api/vendors/{id}` | `catalog:read`, `catalog:write` |
 | `GET`, `POST`, `PATCH` | `/api/locations`, `/api/locations/{id}` | `inventory:read`, `catalog:write`; enforces `warehouse > room > shelf > bin` hierarchy |
 | `GET` | `/api/stock?item_id=&location_id=&limit=100&offset=0` | `inventory:read`; paginated |
@@ -131,9 +133,26 @@ All endpoints except login, health, and readiness require a bearer token. Permis
 | `GET` | `/api/reports/low-stock?limit=100&offset=0` | `reports:read`; paginated |
 | `GET` | `/api/reports/valuation` | `reports:read`; active catalog standard-cost valuation and per-item breakdown |
 | `GET` | `/api/reports/consumption?days=30&limit=100&offset=0` | `reports:read`; total and average daily issue quantity, paginated |
-| `GET` | `/api/reports/{low-stock\|valuation\|consumption}/export?format=csv` | `reports:read`; CSV download (consumption accepts `days`) |
+| `GET`, `POST` | `/api/donors`, `/api/donations`, `/api/donations/{id}` | `catalog:read`, `catalog:write`, `inventory:read`, `inventory:transact`; donor directory and in-kind receipts |
+| `GET` | `/api/donations/monthly-summary?year=2026` | `inventory:read`; monthly donation totals by catalog item for the selected year |
+| `GET`, `POST` | `/api/care-logs`, `/api/care-logs/{id}` | `inventory:read`, `inventory:transact`; timestamped daily care issues |
+| `GET`, `POST` | `/api/stock-takes`, `/api/stock-takes/{id}` | `inventory:read`, `inventory:transact`; count and reconcile stock variances |
+| `POST` | `/api/stock-takes/{id}/finalize` | `inventory:transact`; post reconciliation adjustment once |
+| `GET` | `/api/reports/monthly-ledger?year=2026&month=4&location_id=&category_id=` | `reports:read`; auditable monthly movement summary |
+| `GET` | `/api/reports/export?report_type=low-stock\|valuation\|consumption\|monthly-ledger` | `reports:read`; CSV download (consumption accepts `days`; monthly ledger accepts `year` and `month`) |
 
 Stock requests accept an optional `Idempotency-Key` header. Reusing the key with the same request returns the original transaction; reusing it for a different payload returns `409 Conflict`.
+
+### Catalog-only Excel import
+
+After applying migrations, import item names and bold section headings from a workbook sheet without importing historical quantities:
+
+```powershell
+cd backend
+python -m app.cli import-excel --file "../CONSUMABLES AND SUNDRIES APRILS 2026.xlsx" --sheet "APRIL2026"
+```
+
+The importer creates missing catalog items with deterministic `XLS-...` SKUs, uses the `each` unit (creating it if needed), maps bold worksheet section headings to categories, and skips existing item names. It does not create stock balances or ledger transactions.
 
 ## Validate
 

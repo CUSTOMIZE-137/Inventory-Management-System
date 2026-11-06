@@ -143,10 +143,15 @@
       const [departments, setDepartments] = useState([]);
       const [locations, setLocations] = useState([]);
       const [vendors, setVendors] = useState([]);
+      const [donors, setDonors] = useState([]);
+      const [unitConversions, setUnitConversions] = useState([]);
       const [stock, setStock] = useState([]);
       const [transactions, setTransactions] = useState([]);
       const [purchaseOrders, setPurchaseOrders] = useState([]);
       const [requisitions, setRequisitions] = useState([]);
+      const [donations, setDonations] = useState([]);
+      const [careLogs, setCareLogs] = useState([]);
+      const [stockTakes, setStockTakes] = useState([]);
       const [lowStock, setLowStock] = useState([]);
       const [valuation, setValuation] = useState({ total_value: 0, items: [] });
       const [consumption, setConsumption] = useState([]);
@@ -193,7 +198,9 @@
               apiFetch("/api/units").then(setUnits),
               apiFetch("/api/categories").then(setCategories),
               apiFetch("/api/departments").then(setDepartments),
-              apiFetch("/api/vendors?include_inactive=true").then(setVendors)
+              apiFetch("/api/vendors?include_inactive=true").then(setVendors),
+              apiFetch("/api/donors?include_inactive=true").then(setDonors),
+              apiFetch("/api/unit-conversions").then(setUnitConversions)
             );
           }
           if (perms.has("inventory:read")) {
@@ -201,7 +208,10 @@
               apiFetch("/api/locations?include_inactive=true").then(setLocations),
               apiFetch("/api/stock").then(setStock),
               apiFetch("/api/transactions?limit=50").then(setTransactions),
-              apiFetch("/api/purchase-orders").then(setPurchaseOrders)
+              apiFetch("/api/purchase-orders").then(setPurchaseOrders),
+              apiFetch("/api/donations").then(setDonations),
+              apiFetch("/api/care-logs").then(setCareLogs),
+              apiFetch("/api/stock-takes").then(setStockTakes)
             );
           }
           promises.push(apiFetch("/api/requisitions").then(setRequisitions).catch(() => {}));
@@ -309,7 +319,7 @@
                       Demo Accounts (Password: <code className="text-[#F9DB27]">AdminPassword123!</code>):
                     </p>
                     <div className="flex flex-wrap gap-1.5 pt-1">
-                      {["admin@example.org", "supervisor@example.org", "manager@example.org", "requester@example.org"].map((acct) => (
+                      {["admin@example.org", "manager@example.org", "requester@example.org"].map((acct) => (
                         <button
                           key={acct}
                           type="button"
@@ -336,17 +346,17 @@
       }
 
       const itemMap = Object.fromEntries(items.map((i) => [i.id, i]));
-      const locMap = Object.fromEntries(locations.map((l) => [l.id, l]));
       const vendorMap = Object.fromEntries(vendors.map((v) => [v.id, v]));
+      const isAdministrator = me.roles.includes("system_administrator");
+      const isManager = me.roles.includes("manager");
+      const isRequester = me.roles.includes("requester");
 
       const navTabs = [
-        ["dashboard", "Stock Dashboard"],
-        ["catalog", "Stock Items & Locations"],
-        ["stock", "Stock & Ledger"],
-        ["pos", "Stock Replenishment"],
-        ["requisitions", "Stock Requisitions"],
-        ["reports", "Stock Reports"],
-        ...(me.permissions.includes("users:manage") ? [["users", "Users & Roles"]] : []),
+        ["dashboard", isRequester ? "Available Stock" : "Stock Dashboard"],
+        ...(!isRequester ? [["catalog", "Stock Items"]] : []),
+        ...(isManager ? [["pos", "Stock Replenishment"], ["requisitions", "Stock Requests"]] : []),
+        ...(me.permissions.includes("reports:read") ? [["reports", "Stock Reports"]] : []),
+        ...(isAdministrator ? [["users", "System Users"]] : []),
       ];
 
       return (
@@ -371,7 +381,7 @@
                       <span className="hidden sm:inline-block w-2 h-2 rounded-full bg-[#EE1C26] ring-2 ring-[#F9DB27]/60" />
                     </div>
                     <div className="text-[11px] font-medium text-[#F6982B]">
-                      Multi-Location Inventory Control
+                      Stock Availability & Control
                     </div>
                   </div>
                 </div>
@@ -442,14 +452,14 @@
             {activeTab === "dashboard" && (
               <DashboardView
                 items={items}
-                locations={locations}
                 stock={stock}
                 lowStock={lowStock}
                 valuation={valuation}
-                transactions={transactions}
                 requisitions={requisitions}
-                itemMap={itemMap}
-                locMap={locMap}
+                canWithdraw={me.permissions.includes("inventory:withdraw")}
+                apiFetch={apiFetch}
+                onRefresh={loadAll}
+                notify={notify}
               />
             )}
             {activeTab === "catalog" && (
@@ -458,21 +468,8 @@
                 units={units}
                 categories={categories}
                 departments={departments}
-                locations={locations}
                 vendors={vendors}
-                apiFetch={apiFetch}
-                onRefresh={loadAll}
-                notify={notify}
-              />
-            )}
-            {activeTab === "stock" && (
-              <StockView
-                items={items}
-                locations={locations}
-                stock={stock}
-                transactions={transactions}
-                itemMap={itemMap}
-                locMap={locMap}
+                unitConversions={unitConversions}
                 apiFetch={apiFetch}
                 onRefresh={loadAll}
                 notify={notify}
@@ -483,7 +480,6 @@
                 purchaseOrders={purchaseOrders}
                 vendors={vendors}
                 items={items}
-                locations={locations}
                 itemMap={itemMap}
                 vendorMap={vendorMap}
                 apiFetch={apiFetch}
@@ -495,7 +491,6 @@
               <RequisitionsView
                 requisitions={requisitions}
                 items={items}
-                locations={locations}
                 itemMap={itemMap}
                 me={me}
                 apiFetch={apiFetch}
@@ -509,6 +504,9 @@
                 valuation={valuation}
                 consumption={consumption}
                 token={token}
+                categories={categories}
+                apiFetch={apiFetch}
+                notify={notify}
               />
             )}
             {activeTab === "users" && (
@@ -541,9 +539,36 @@
       );
     }
 
-    function DashboardView({ items, locations, stock, lowStock, valuation, transactions, requisitions, itemMap, locMap }) {
+    function DashboardView({ items, stock, lowStock, valuation, requisitions, canWithdraw, apiFetch, onRefresh, notify }) {
+      const [withdrawItemId, setWithdrawItemId] = useState("");
+      const [withdrawQuantity, setWithdrawQuantity] = useState("1");
+      const [withdrawRecipient, setWithdrawRecipient] = useState("");
       const totalUnits = stock.reduce((acc, s) => acc + parseFloat(s.quantity || 0), 0);
       const pendingReqs = requisitions.filter((r) => r.status !== "completed" && r.status !== "rejected").length;
+      const availableByItem = stock.reduce((result, balance) => {
+        result[balance.item_id] = (result[balance.item_id] || 0) + Number(balance.quantity || 0);
+        return result;
+      }, {});
+      const withdraw = async (event) => {
+        event.preventDefault();
+        try {
+          await apiFetch("/api/stock/withdraw", {
+            method: "POST",
+            headers: { "Idempotency-Key": `withdraw-${Date.now()}` },
+            body: JSON.stringify({
+              item_id: withdrawItemId || (items[0] && items[0].id),
+              quantity: withdrawQuantity,
+              recipient: withdrawRecipient,
+            }),
+          });
+          setWithdrawQuantity("1");
+          setWithdrawRecipient("");
+          notify("Stock withdrawn and availability updated", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
 
       return (
         <div className="space-y-6">
@@ -563,10 +588,6 @@
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <div className="px-3 py-2 rounded-xl bg-[#120D0E]/80 border border-[#38282B] text-right">
-                  <div className="text-[11px] text-stone-400">Storage Locations</div>
-                  <div className="text-sm font-bold text-[#F9DB27]">{locations.length}</div>
-                </div>
-                <div className="px-3 py-2 rounded-xl bg-[#120D0E]/80 border border-[#38282B] text-right">
                   <div className="text-[11px] text-stone-400">Stock SKUs</div>
                   <div className="text-sm font-bold text-[#F6982B]">{items.length}</div>
                 </div>
@@ -583,9 +604,9 @@
               <div className="text-xs text-[#F9DB27] mt-1">{items.length} active catalog items</div>
             </div>
             <div className="p-5 rounded-xl bg-[#1C1416] border border-[#38282B] border-t-2 border-t-[#F9DB27]">
-              <div className="text-xs text-stone-400">On-Hand Units Across Locations</div>
+              <div className="text-xs text-stone-400">Available Stock Units</div>
               <div className="text-2xl font-bold text-white mt-1">{totalUnits.toFixed(2)}</div>
-              <div className="text-xs text-stone-400 mt-1">{locations.length} storage locations</div>
+              <div className="text-xs text-stone-400 mt-1">Across all managed stock</div>
             </div>
             <div className="p-5 rounded-xl bg-[#1C1416] border border-[#38282B] border-t-2 border-t-[#F6982B]">
               <div className="text-xs text-stone-400">Low-Stock Alerts</div>
@@ -598,6 +619,26 @@
               <div className="text-xs text-stone-400 mt-1">Awaiting review, dispatch, or confirm</div>
             </div>
           </div>
+
+          {canWithdraw && (
+            <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-4">
+              <div>
+                <h2 className="text-sm font-semibold text-white">Withdraw Stock</h2>
+                <p className="text-xs text-stone-400 mt-1">Select an item and quantity. Available stock reduces immediately.</p>
+              </div>
+              <form onSubmit={withdraw} className="grid grid-cols-1 md:grid-cols-[1fr_160px_1fr_auto] gap-2.5">
+                <select required value={withdrawItemId} onChange={(event) => setWithdrawItemId(event.target.value)} className="px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white">
+                  <option value="">Select item</option>
+                  {items.filter((item) => item.is_active).map((item) => (
+                    <option key={item.id} value={item.id}>{item.sku} · {item.name} ({Number(availableByItem[item.id] || 0).toFixed(3)} available)</option>
+                  ))}
+                </select>
+                <input type="number" min="0.001" step="0.001" required value={withdrawQuantity} onChange={(event) => setWithdrawQuantity(event.target.value)} placeholder="Quantity" className="px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white" />
+                <input required maxLength="200" value={withdrawRecipient} onChange={(event) => setWithdrawRecipient(event.target.value)} placeholder="Purpose or recipient" className="px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white" />
+                <button className="py-2 px-4 bg-[#EE1C26] hover:bg-[#C4121B] text-white rounded-lg text-xs font-semibold">Take Item</button>
+              </form>
+            </section>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
@@ -636,33 +677,21 @@
             <div className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
               <h2 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-[#F9DB27]" />
-                <span>Recent Ledger Transactions</span>
+                <span>Current Stock Availability</span>
               </h2>
-              {transactions.length === 0 ? (
-                <p className="text-xs text-stone-500">No stock transactions recorded yet.</p>
+              {items.length === 0 ? (
+                <p className="text-xs text-stone-500">No stock items configured yet.</p>
               ) : (
                 <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                  {transactions.slice(0, 8).map((tx) => (
-                    <div key={tx.id} className="p-3 rounded-lg bg-[#120D0E] border border-[#38282B] flex items-center justify-between text-xs">
+                  {items.map((item) => (
+                    <div key={item.id} className="p-3 rounded-lg bg-[#120D0E] border border-[#38282B] flex items-center justify-between text-xs">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <Badge color={tx.transaction_type === "receipt" ? "emerald" : tx.transaction_type === "issue" ? "rose" : "amber"}>
-                            {tx.transaction_type}
-                          </Badge>
-                          <span className="font-medium text-stone-200">{tx.reason}</span>
-                        </div>
-                        <div className="text-stone-400 mt-1">
-                          {tx.movements.map((m, idx) => (
-                            <span key={idx} className="mr-3">
-                              {itemMap[m.item_id]?.sku || m.item_id.slice(0, 6)} @ {locMap[m.location_id]?.name || m.location_id.slice(0, 6)}:{" "}
-                              <strong className={Number(m.quantity_delta) > 0 ? "text-[#F9DB27]" : "text-[#EE1C26]"}>
-                                {Number(m.quantity_delta) > 0 ? `+${Number(m.quantity_delta)}` : Number(m.quantity_delta)}
-                              </strong>
-                            </span>
-                          ))}
-                        </div>
+                        <div className="font-medium text-stone-200">{item.name}</div>
+                        <div className="text-stone-500 mt-1">{item.sku} · {item.uom_code}</div>
                       </div>
-                      {tx.reference && <span className="font-mono text-[11px] text-stone-400">{tx.reference}</span>}
+                      <strong className={Number(availableByItem[item.id] || 0) <= Number(item.minimum_stock || 0) ? "text-[#EE1C26]" : "text-[#F9DB27]"}>
+                        {Number(availableByItem[item.id] || 0).toFixed(3)}
+                      </strong>
                     </div>
                   ))}
                 </div>
@@ -673,19 +702,22 @@
       );
     }
 
-    function CatalogView({ items, units, categories, departments, locations, vendors, apiFetch, onRefresh, notify }) {
+    function CatalogView({ items, units, categories, departments, vendors, unitConversions, apiFetch, onRefresh, notify }) {
       const [uomCode, setUomCode] = useState("");
       const [uomName, setUomName] = useState("");
       const [sku, setSku] = useState("");
       const [itemName, setItemName] = useState("");
       const [itemUom, setItemUom] = useState("");
+      const [itemType, setItemType] = useState("consumable");
+      const [trackingType, setTrackingType] = useState("bulk");
+      const [defaultIssueUom, setDefaultIssueUom] = useState("");
       const [minStock, setMinStock] = useState("5");
       const [unitCost, setUnitCost] = useState("10.00");
       const [requiresApproval, setRequiresApproval] = useState(false);
-
-      const [locName, setLocName] = useState("");
-      const [locType, setLocType] = useState("warehouse");
-      const [locParent, setLocParent] = useState("");
+      const [conversionItem, setConversionItem] = useState("");
+      const [conversionFrom, setConversionFrom] = useState("");
+      const [conversionTo, setConversionTo] = useState("");
+      const [conversionMultiplier, setConversionMultiplier] = useState("1");
 
       const [vendorName, setVendorName] = useState("");
       const [vendorEmail, setVendorEmail] = useState("");
@@ -706,6 +738,25 @@
         }
       };
 
+      const createConversion = async (e) => {
+        e.preventDefault();
+        try {
+          await apiFetch("/api/unit-conversions", {
+            method: "POST",
+            body: JSON.stringify({
+              item_id: conversionItem || (items[0] && items[0].id),
+              from_uom: conversionFrom || (units[0] && units[0].code),
+              to_uom: conversionTo || (units[1] && units[1].code) || (units[0] && units[0].code),
+              multiplier: conversionMultiplier,
+            }),
+          });
+          notify("Unit conversion created", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
       const createItem = async (e) => {
         e.preventDefault();
         try {
@@ -715,6 +766,9 @@
               sku,
               name: itemName,
               uom_code: itemUom || (units[0] && units[0].code) || "each",
+              item_type: itemType,
+              tracking_type: trackingType,
+              default_issue_uom: defaultIssueUom || null,
               minimum_stock: minStock,
               unit_cost: unitCost,
               requires_approval: requiresApproval,
@@ -723,25 +777,6 @@
           setSku("");
           setItemName("");
           notify("Catalog item created", "success");
-          onRefresh();
-        } catch (err) {
-          notify(err.message, "error");
-        }
-      };
-
-      const createLocation = async (e) => {
-        e.preventDefault();
-        try {
-          await apiFetch("/api/locations", {
-            method: "POST",
-            body: JSON.stringify({
-              name: locName,
-              location_type: locType,
-              parent_id: locParent || null,
-            }),
-          });
-          setLocName("");
-          notify("Location created", "success");
           onRefresh();
         } catch (err) {
           notify(err.message, "error");
@@ -811,6 +846,32 @@
                   className="px-2.5 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={itemType}
+                  onChange={(e) => setItemType(e.target.value)}
+                  className="px-2.5 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
+                >
+                  <option value="consumable">Consumable</option>
+                  <option value="assistive_asset">Assistive asset</option>
+                </select>
+                <select
+                  value={trackingType}
+                  onChange={(e) => setTrackingType(e.target.value)}
+                  className="px-2.5 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
+                >
+                  <option value="bulk">Bulk tracking</option>
+                  <option value="serialized">Serialized tracking</option>
+                </select>
+              </div>
+              <select
+                value={defaultIssueUom}
+                onChange={(e) => setDefaultIssueUom(e.target.value)}
+                className="w-full px-2.5 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
+              >
+                <option value="">Default issue unit (same as stock unit)</option>
+                {units.map((u) => <option key={u.code} value={u.code}>{u.name} ({u.code})</option>)}
+              </select>
               <label className="flex items-center gap-2 text-xs text-stone-300">
                 <input
                   type="checkbox"
@@ -822,41 +883,6 @@
               </label>
               <button className="w-full py-2 bg-[#EE1C26] hover:bg-[#C4121B] text-white rounded-lg text-xs font-semibold transition">
                 Add Item
-              </button>
-            </form>
-
-            {/* Create Location */}
-            <form onSubmit={createLocation} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-3">
-              <h3 className="text-sm font-semibold text-white">New Storage Location</h3>
-              <input
-                placeholder="Location Name (e.g. Rack A1)"
-                required
-                value={locName}
-                onChange={(e) => setLocName(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] focus:border-[#F9DB27] focus:outline-none text-xs text-white"
-              />
-              <select
-                value={locType}
-                onChange={(e) => setLocType(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
-              >
-                <option value="warehouse">Warehouse (Top Level)</option>
-                <option value="room">Room</option>
-                <option value="shelf">Shelf</option>
-                <option value="bin">Bin</option>
-              </select>
-              <select
-                value={locParent}
-                onChange={(e) => setLocParent(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
-              >
-                <option value="">No Parent Location</option>
-                {locations.map((l) => (
-                  <option key={l.id} value={l.id}>{l.name} ({l.location_type})</option>
-                ))}
-              </select>
-              <button className="w-full py-2 bg-[#EE1C26] hover:bg-[#C4121B] text-white rounded-lg text-xs font-semibold transition">
-                Add Location
               </button>
             </form>
 
@@ -884,6 +910,43 @@
                   Save Unit
                 </button>
               </form>
+
+              <form onSubmit={createConversion} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-4 space-y-2.5">
+                <h3 className="text-xs font-semibold text-white">Item Unit Conversion</h3>
+                <select
+                  value={conversionItem}
+                  onChange={(e) => setConversionItem(e.target.value)}
+                  required
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white"
+                >
+                  <option value="">Select item</option>
+                  {items.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <select required value={conversionFrom} onChange={(e) => setConversionFrom(e.target.value)} className="px-2 py-1.5 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white">
+                    <option value="">From unit</option>
+                    {units.map((u) => <option key={u.code} value={u.code}>{u.code}</option>)}
+                  </select>
+                  <select required value={conversionTo} onChange={(e) => setConversionTo(e.target.value)} className="px-2 py-1.5 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white">
+                    <option value="">To unit</option>
+                    {units.map((u) => <option key={u.code} value={u.code}>{u.code}</option>)}
+                  </select>
+                </div>
+                <input type="number" step="0.000001" min="0.000001" required value={conversionMultiplier} onChange={(e) => setConversionMultiplier(e.target.value)} placeholder="Multiplier (1 box = 48 each)" className="w-full px-2.5 py-1.5 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white" />
+                <button className="w-full py-1.5 bg-[#241A1C] hover:bg-[#322326] border border-[#38282B] text-[#F9DB27] rounded-lg text-xs font-medium transition">Save Conversion</button>
+              </form>
+              <div className="bg-[#1C1416] border border-[#38282B] rounded-xl p-4 space-y-2">
+                <h3 className="text-xs font-semibold text-white">Configured Conversions</h3>
+                <div className="max-h-32 overflow-auto space-y-1">
+                  {unitConversions.map((conversion) => (
+                    <div key={conversion.id} className="text-[11px] text-stone-300">
+                      <span className="text-[#F9DB27]">{items.find((item) => item.id === conversion.item_id)?.name || conversion.item_id}</span>
+                      <span> · 1 {conversion.from_uom} = {conversion.multiplier} {conversion.to_uom}</span>
+                    </div>
+                  ))}
+                  {!unitConversions.length && <p className="text-[11px] text-stone-500">No unit conversions configured.</p>}
+                </div>
+              </div>
 
               <form onSubmit={createVendor} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-4 space-y-2.5">
                 <h3 className="text-xs font-semibold text-white">Add Vendor</h3>
@@ -918,6 +981,7 @@
                     <th className="pb-2">SKU</th>
                     <th className="pb-2">Name</th>
                     <th className="pb-2">UOM</th>
+                    <th className="pb-2">Type / Tracking</th>
                     <th className="pb-2 text-right">Min Stock</th>
                     <th className="pb-2 text-right">Unit Cost</th>
                     <th className="pb-2">Policy</th>
@@ -929,6 +993,7 @@
                       <td className="py-2.5 font-mono text-[#F9DB27]">{item.sku}</td>
                       <td className="py-2.5 text-white font-medium">{item.name}</td>
                       <td className="py-2.5 text-stone-400">{item.uom_code}</td>
+                      <td className="py-2.5 text-stone-300">{item.item_type} / {item.tracking_type}</td>
                       <td className="py-2.5 text-right">{Number(item.minimum_stock).toFixed(2)}</td>
                       <td className="py-2.5 text-right">${Number(item.unit_cost).toFixed(2)}</td>
                       <td className="py-2.5">
@@ -1339,11 +1404,10 @@
       );
     }
 
-    function RequisitionsView({ requisitions, items, locations, itemMap, me, apiFetch, onRefresh, notify }) {
+    function RequisitionsView({ requisitions, items, itemMap, me, apiFetch, onRefresh, notify }) {
       const [reference, setReference] = useState("");
       const [itemId, setItemId] = useState("");
       const [qty, setQty] = useState("2");
-      const [dispatchLoc, setDispatchLoc] = useState("");
 
       const submitReq = async (e) => {
         e.preventDefault();
@@ -1356,7 +1420,7 @@
             }),
           });
           setReference("");
-          notify("Requisition submitted for supervisor review", "success");
+          notify("Requisition submitted for manager review", "success");
           onRefresh();
         } catch (err) {
           notify(err.message, "error");
@@ -1381,7 +1445,7 @@
           await apiFetch(`/api/requisitions/${reqId}/dispatch`, {
             method: "POST",
             headers: { "Idempotency-Key": `disp-${reqId}` },
-            body: JSON.stringify({ location_id: dispatchLoc || (locations[0] && locations[0].id) }),
+            body: JSON.stringify({}),
           });
           notify("Requisition dispatched from stock", "success");
           onRefresh();
@@ -1437,18 +1501,6 @@
           <div className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">Requisition Workflow Queue ({requisitions.length})</h3>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-stone-400">Dispatch Location:</span>
-                <select
-                  value={dispatchLoc}
-                  onChange={(e) => setDispatchLoc(e.target.value)}
-                  className="px-2.5 py-1 rounded bg-[#120D0E] border border-[#38282B] text-white"
-                >
-                  {locations.map((l) => (
-                    <option key={l.id} value={l.id}>{l.name}</option>
-                  ))}
-                </select>
-              </div>
             </div>
 
             <div className="space-y-3">
@@ -1462,7 +1514,7 @@
                       </Badge>
                     </div>
                     <div className="flex items-center gap-2">
-                      {(req.status === "pending_supervisor" || req.status === "pending_store_manager") &&
+                      {(req.status === "pending_manager" || req.status === "pending_store_manager") &&
                         me.permissions.includes("requisitions:approve") && (
                           <>
                             <button
@@ -1513,9 +1565,586 @@
       );
     }
 
-    function ReportsView({ lowStock, valuation, consumption }) {
+    function DonationsCareView({
+      donors, donations, careLogs, items, categories, locations, departments, me,
+      apiFetch, onRefresh, notify,
+    }) {
+      const currentYear = new Date().getFullYear();
+      const [reportYear, setReportYear] = useState(String(currentYear));
+      const [donationSummary, setDonationSummary] = useState(null);
+      const [reportLoading, setReportLoading] = useState(false);
+      const [donorName, setDonorName] = useState("");
+      const [donorType, setDonorType] = useState("organization");
+      const [donorEmail, setDonorEmail] = useState("");
+      const [donationReference, setDonationReference] = useState("");
+      const [donationDonor, setDonationDonor] = useState("");
+      const [donationLines, setDonationLines] = useState([{ item_id: "", location_id: "", quantity: "1" }]);
+      const [careLocation, setCareLocation] = useState("");
+      const [careDepartment, setCareDepartment] = useState("");
+      const [careActivity, setCareActivity] = useState("general_issue");
+      const [careRecipient, setCareRecipient] = useState("");
+      const [careLines, setCareLines] = useState([{ item_id: "", quantity: "1" }]);
+      const itemMap = Object.fromEntries(items.map((item) => [item.id, item]));
+      const donorMap = Object.fromEntries(donors.map((donor) => [donor.id, donor]));
+      const categoryMap = Object.fromEntries(categories.map((category) => [category.id, category]));
+      const canWriteCatalog = me.permissions.includes("catalog:write");
+      const canTransact = me.permissions.includes("inventory:transact");
+
+      useEffect(() => {
+        let current = true;
+        setReportLoading(true);
+        const params = new URLSearchParams({ year: reportYear });
+        apiFetch(`/api/donations/monthly-summary?${params}`)
+          .then((summary) => {
+            if (current) setDonationSummary(summary);
+          })
+          .catch((err) => {
+            if (current) {
+              setDonationSummary(null);
+              notify(err.message, "error");
+            }
+          })
+          .finally(() => {
+            if (current) setReportLoading(false);
+          });
+        return () => {
+          current = false;
+        };
+      }, [apiFetch, reportYear, donations]);
+
+      const reportGroups = Object.values(
+        (donationSummary?.rows || []).reduce((groups, row) => {
+          const categoryId = row.category_id || "uncategorized";
+          if (!groups[categoryId]) {
+            groups[categoryId] = {
+              id: categoryId,
+              name: categoryMap[categoryId]?.name || "Uncategorized",
+              rows: [],
+              monthlyTotals: Array(12).fill(0),
+              total: 0,
+            };
+          }
+          const group = groups[categoryId];
+          group.rows.push(row);
+          row.monthly_quantities.forEach((quantity, index) => {
+            group.monthlyTotals[index] += Number(quantity);
+          });
+          group.total += Number(row.total_quantity);
+          return groups;
+        }, {})
+      ).sort((left, right) => left.name.localeCompare(right.name));
+      const reportTotal = reportGroups.reduce((total, group) => total + group.total, 0);
+      const reportItemCount = (donationSummary?.rows || []).length;
+      const formatQuantity = (quantity) =>
+        Number(quantity).toLocaleString(undefined, { maximumFractionDigits: 3 });
+
+      const createDonor = async (e) => {
+        e.preventDefault();
+        try {
+          await apiFetch("/api/donors", {
+            method: "POST",
+            body: JSON.stringify({
+              name: donorName,
+              donor_type: donorType,
+              email: donorEmail || null,
+            }),
+          });
+          setDonorName("");
+          setDonorEmail("");
+          notify("Donor saved", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
+      const createDonation = async (e) => {
+        e.preventDefault();
+        const lines = donationLines.map((line) => {
+          const item = itemMap[line.item_id];
+          if (!item || !line.location_id) return null;
+          return {
+            item_id: item.id,
+            location_id: line.location_id,
+            quantity: line.quantity,
+            uom_code: item.uom_code,
+          };
+        });
+        if (lines.some((line) => line === null)) {
+          notify("Select an active item and location for every donation line", "error");
+          return;
+        }
+        try {
+          await apiFetch("/api/donations", {
+            method: "POST",
+            headers: { "Idempotency-Key": `don-${donationReference}` },
+            body: JSON.stringify({
+              donor_id: donationDonor || null,
+              reference: donationReference,
+              lines,
+            }),
+          });
+          setDonationReference("");
+          setDonationLines([{ item_id: "", location_id: "", quantity: "1" }]);
+          notify("Donation received into stock", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
+      const createCareLog = async (e) => {
+        e.preventDefault();
+        const selectedLocation = careLocation || (locations[0] && locations[0].id);
+        const lines = careLines.map((line) => {
+          const item = itemMap[line.item_id];
+          if (!item) return null;
+          return {
+            item_id: item.id,
+            quantity: line.quantity,
+            uom_code: item.uom_code,
+          };
+        });
+        if (!selectedLocation || lines.some((line) => line === null)) {
+          notify("Select an active item and location for every care line", "error");
+          return;
+        }
+        try {
+          await apiFetch("/api/care-logs", {
+            method: "POST",
+            body: JSON.stringify({
+              department_id: careDepartment || null,
+              location_id: selectedLocation,
+              activity_type: careActivity,
+              recipient: careRecipient,
+              lines,
+            }),
+          });
+          setCareRecipient("");
+          setCareLines([{ item_id: "", quantity: "1" }]);
+          notify("Care dispense recorded", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
+      const selectClass = "w-full px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white";
+      const inputClass = "w-full px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white";
+
       return (
         <div className="space-y-6">
+          <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-[#F6982B] font-semibold">Donations in kind</p>
+                <h2 className="text-lg font-bold text-white mt-1">Monthly Donations Register</h2>
+                <p className="text-xs text-stone-400 mt-1">Monthly receipts by item, grouped by catalog category.</p>
+              </div>
+              <label className="text-xs text-stone-300 flex items-center gap-2">
+                Reporting year
+                <input
+                  type="number"
+                  min="2000"
+                  max="2100"
+                  value={reportYear}
+                  onChange={(e) => {
+                    if (e.target.value) setReportYear(e.target.value);
+                  }}
+                  className="w-24 px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-sm text-white"
+                />
+              </label>
+            </div>
+
+            {reportLoading && <p className="text-xs text-stone-400">Loading donation totals...</p>}
+            {!reportLoading && donationSummary && (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-[#120D0E] border border-[#38282B] p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-stone-500">Year total</p>
+                    <p className="text-xl font-bold text-[#F9DB27] mt-1">{formatQuantity(reportTotal)}</p>
+                    <p className="text-[11px] text-stone-500">Quantities in catalog base units</p>
+                  </div>
+                  <div className="rounded-lg bg-[#120D0E] border border-[#38282B] p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-stone-500">Catalog items</p>
+                    <p className="text-xl font-bold text-white mt-1">{reportItemCount}</p>
+                    <p className="text-[11px] text-stone-500">Items listed in the monthly register</p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto rounded-lg border border-[#38282B]">
+                  <table className="w-full min-w-[1180px] text-xs border-collapse">
+                    <thead className="bg-[#241A1C] text-stone-300 sticky top-0">
+                      <tr>
+                        <th scope="col" className="sticky left-0 z-10 bg-[#241A1C] text-left px-3 py-3 min-w-[220px]">Items</th>
+                        {["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((month) => (
+                          <th key={month} scope="col" className="text-right px-2 py-3 min-w-[72px]">{month}</th>
+                        ))}
+                        <th scope="col" className="text-right px-3 py-3 min-w-[100px] text-[#F9DB27]">Total Items</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportGroups.map((group) => (
+                        <React.Fragment key={group.id}>
+                          <tr className="bg-[#2A1D20]">
+                            <th colSpan="14" scope="rowgroup" className="text-left px-3 py-2 text-[#F6982B] uppercase tracking-wide">{group.name}</th>
+                          </tr>
+                          {group.rows.map((row) => (
+                            <tr key={row.item_id} className="border-t border-[#38282B] hover:bg-[#241A1C]/70">
+                              <th scope="row" className="sticky left-0 bg-[#1C1416] text-left px-3 py-2 font-medium text-stone-200">
+                                <span className="block">{row.name}</span>
+                                <span className="block text-[10px] text-stone-500">{row.sku} · {row.uom_code}</span>
+                              </th>
+                              {row.monthly_quantities.map((quantity, index) => (
+                                <td key={index} className="text-right px-2 py-2 tabular-nums text-stone-300">
+                                  {Number(quantity) ? formatQuantity(quantity) : <span className="text-stone-600">—</span>}
+                                </td>
+                              ))}
+                              <td className="text-right px-3 py-2 tabular-nums font-semibold text-white">{formatQuantity(row.total_quantity)}</td>
+                            </tr>
+                          ))}
+                          <tr className="border-t border-[#4A3337] bg-[#241A1C] font-semibold">
+                            <th scope="row" className="sticky left-0 bg-[#241A1C] text-left px-3 py-2 text-stone-300">{group.name} Total</th>
+                            {group.monthlyTotals.map((quantity, index) => (
+                              <td key={index} className="text-right px-2 py-2 tabular-nums text-stone-200">{formatQuantity(quantity)}</td>
+                            ))}
+                            <td className="text-right px-3 py-2 tabular-nums text-[#F9DB27]">{formatQuantity(group.total)}</td>
+                          </tr>
+                        </React.Fragment>
+                      ))}
+                      {!reportGroups.length && (
+                        <tr><td colSpan="14" className="px-3 py-8 text-center text-stone-500">No catalog items found.</td></tr>
+                      )}
+                      {!!reportGroups.length && (
+                        <tr className="bg-[#EE1C26]/15 font-bold">
+                          <th scope="row" className="sticky left-0 bg-[#351719] text-left px-3 py-3 text-white">Grand Total</th>
+                          {Array.from({ length: 12 }, (_, index) => {
+                            const total = reportGroups.reduce((sum, group) => sum + group.monthlyTotals[index], 0);
+                            return <td key={index} className="text-right px-2 py-3 tabular-nums text-white">{formatQuantity(total)}</td>;
+                          })}
+                          <td className="text-right px-3 py-3 tabular-nums text-[#F9DB27]">{formatQuantity(reportTotal)}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[11px] text-stone-500">Totals follow the workbook layout. Where item units differ, combined totals are counts of recorded base units, not a common physical unit. Workbook figures were not imported.</p>
+              </>
+            )}
+          </section>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+            {canWriteCatalog && (
+              <form onSubmit={createDonor} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-white">Register Donor</h3>
+                <input required maxLength="200" value={donorName} onChange={(e) => setDonorName(e.target.value)} placeholder="Donor or organization name" className={inputClass} />
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={donorType} onChange={(e) => setDonorType(e.target.value)} className={selectClass}>
+                    <option value="individual">Individual</option>
+                    <option value="organization">Organization</option>
+                    <option value="foundation">Foundation</option>
+                    <option value="government">Government</option>
+                  </select>
+                  <input type="email" value={donorEmail} onChange={(e) => setDonorEmail(e.target.value)} placeholder="Email (optional)" className={inputClass} />
+                </div>
+                <button className="w-full py-2 bg-[#241A1C] border border-[#38282B] text-[#F9DB27] rounded-lg text-xs font-semibold">Save Donor</button>
+              </form>
+            )}
+
+            {canTransact && (
+              <form onSubmit={createDonation} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-white">Receive In-Kind Donation</h3>
+                <input required maxLength="120" value={donationReference} onChange={(e) => setDonationReference(e.target.value)} placeholder="Unique donation reference" className={inputClass} />
+                <select value={donationDonor} onChange={(e) => setDonationDonor(e.target.value)} className={selectClass}>
+                  <option value="">Unattributed donor</option>
+                  {donors.filter((donor) => donor.is_active).map((donor) => <option key={donor.id} value={donor.id}>{donor.name}</option>)}
+                </select>
+                <div className="space-y-2">
+                  {donationLines.map((line, index) => (
+                    <div key={index} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_90px_auto] gap-2">
+                      <select value={line.item_id} onChange={(e) => setDonationLines((current) => current.map((entry, row) => row === index ? { ...entry, item_id: e.target.value } : entry))} required className={selectClass}>
+                        <option value="">Select item</option>
+                        {items.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
+                      </select>
+                      <select value={line.location_id} onChange={(e) => setDonationLines((current) => current.map((entry, row) => row === index ? { ...entry, location_id: e.target.value } : entry))} required className={selectClass}>
+                        <option value="">Select location</option>
+                        {locations.filter((location) => location.is_active).map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                      </select>
+                      <input type="number" step="0.001" min="0.001" required value={line.quantity} onChange={(e) => setDonationLines((current) => current.map((entry, row) => row === index ? { ...entry, quantity: e.target.value } : entry))} aria-label={`Donation quantity ${index + 1}`} className={inputClass} />
+                      {donationLines.length > 1 && <button type="button" onClick={() => setDonationLines((current) => current.filter((_, row) => row !== index))} className="px-2 text-xs text-rose-300 border border-rose-900 rounded-lg">Remove</button>}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setDonationLines((current) => [...current, { item_id: "", location_id: "", quantity: "1" }])} className="px-3 py-2 rounded-lg border border-[#38282B] text-[#F9DB27] text-xs">Add item</button>
+                  <button className="flex-1 py-2 bg-[#EE1C26] hover:bg-[#C4121B] text-white rounded-lg text-xs font-semibold">Receive Donation</button>
+                </div>
+              </form>
+            )}
+
+            {canTransact && (
+              <form onSubmit={createCareLog} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-white">Record Daily Care Dispense</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <select value={careActivity} onChange={(e) => setCareActivity(e.target.value)} className={selectClass}>
+                    <option value="general_issue">General issue</option>
+                    <option value="kitchen_meal">Kitchen meal</option>
+                    <option value="nursery_hygiene">Nursery hygiene</option>
+                    <option value="therapy_session">Therapy session</option>
+                    <option value="housekeeping">Housekeeping</option>
+                  </select>
+                  <select value={careDepartment} onChange={(e) => setCareDepartment(e.target.value)} className={selectClass}>
+                    <option value="">No department</option>
+                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                  </select>
+                  <select value={careLocation} onChange={(e) => setCareLocation(e.target.value)} required className={selectClass}>
+                    <option value="">Select location</option>
+                    {locations.filter((location) => location.is_active).map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                  </select>
+                </div>
+                <input required maxLength="200" value={careRecipient} onChange={(e) => setCareRecipient(e.target.value)} placeholder="Recipient or service (e.g. Kitchen - Lunch)" className={inputClass} />
+                <div className="space-y-2">
+                  {careLines.map((line, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_100px_auto] gap-2">
+                      <select value={line.item_id} onChange={(e) => setCareLines((current) => current.map((entry, row) => row === index ? { ...entry, item_id: e.target.value } : entry))} required className={selectClass}>
+                        <option value="">Select item</option>
+                        {items.filter((item) => item.is_active && !item.is_restricted && !item.requires_approval).map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
+                      </select>
+                      <input type="number" step="0.001" min="0.001" required value={line.quantity} onChange={(e) => setCareLines((current) => current.map((entry, row) => row === index ? { ...entry, quantity: e.target.value } : entry))} aria-label={`Care quantity ${index + 1}`} className={inputClass} />
+                      {careLines.length > 1 && <button type="button" onClick={() => setCareLines((current) => current.filter((_, row) => row !== index))} className="px-2 text-xs text-rose-300 border border-rose-900 rounded-lg">Remove</button>}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setCareLines((current) => [...current, { item_id: "", quantity: "1" }])} className="px-3 py-2 rounded-lg border border-[#38282B] text-[#F9DB27] text-xs">Add item</button>
+                  <button className="flex-1 py-2 bg-[#F6982B] hover:bg-[#e0861f] text-[#120D0E] rounded-lg text-xs font-semibold">Record Dispense</button>
+                </div>
+              </form>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-white mb-3">Donation Receipts ({donations.length})</h3>
+              <div className="space-y-2 max-h-96 overflow-auto">
+                {donations.map((donation) => (
+                  <div key={donation.id} className="p-3 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs">
+                    <div className="flex justify-between gap-3"><strong className="text-[#F9DB27]">{donation.reference}</strong><span className="text-stone-400">{new Date(donation.received_date).toLocaleDateString()}</span></div>
+                    <div className="text-stone-300 mt-1">{donorMap[donation.donor_id]?.name || "Unattributed donor"} · {donation.lines.map((line) => `${itemMap[line.item_id]?.name || line.item_id}: ${line.quantity}`).join(", ")}</div>
+                  </div>
+                ))}
+                {!donations.length && <p className="text-xs text-stone-500">No donation receipts recorded.</p>}
+              </div>
+            </section>
+            <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-white mb-3">Daily Care Logs ({careLogs.length})</h3>
+              <div className="space-y-2 max-h-96 overflow-auto">
+                {careLogs.map((log) => (
+                  <div key={log.id} className="p-3 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs">
+                    <div className="flex justify-between gap-3"><strong className="text-white">{log.recipient}</strong><span className="text-stone-400">{new Date(log.created_at).toLocaleString()}</span></div>
+                    <div className="text-stone-300 mt-1">{log.activity_type.replaceAll("_", " ")} · {log.lines.map((line) => `${itemMap[line.item_id]?.name || line.item_id}: ${line.normalized_quantity}`).join(", ")}</div>
+                  </div>
+                ))}
+                {!careLogs.length && <p className="text-xs text-stone-500">No care logs recorded.</p>}
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    function StockTakeView({ stockTakes, items, locations, apiFetch, onRefresh, notify, canTransact }) {
+      const [title, setTitle] = useState("");
+      const [locationId, setLocationId] = useState("");
+      const [countLines, setCountLines] = useState([{ item_id: "", counted_qty: "0" }]);
+      const itemMap = Object.fromEntries(items.map((item) => [item.id, item]));
+
+      const createStockTake = async (e) => {
+        e.preventDefault();
+        const selectedLocation = locationId || (locations[0] && locations[0].id);
+        if (!selectedLocation || countLines.some((line) => !line.item_id)) {
+          notify("Select an active item and location for every count line", "error");
+          return;
+        }
+        try {
+          await apiFetch("/api/stock-takes", {
+            method: "POST",
+            body: JSON.stringify({
+              title,
+              location_id: selectedLocation,
+              lines: countLines,
+            }),
+          });
+          setTitle("");
+          setCountLines([{ item_id: "", counted_qty: "0" }]);
+          notify("Stock take saved; finalize to post its variance", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
+      const finalize = async (id) => {
+        try {
+          await apiFetch(`/api/stock-takes/${id}/finalize`, { method: "POST" });
+          notify("Stock take reconciled", "success");
+          onRefresh();
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+
+      const selectClass = "px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white";
+      return (
+        <div className="space-y-5">
+          {canTransact && (
+            <form onSubmit={createStockTake} className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-3">
+              <h3 className="text-sm font-semibold text-white">Start Stock Take</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                <input required maxLength="160" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Count session title" className={selectClass} />
+                <select required value={locationId} onChange={(e) => setLocationId(e.target.value)} className={selectClass}>
+                  <option value="">Select location</option>
+                  {locations.filter((location) => location.is_active).map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                {countLines.map((line, index) => (
+                  <div key={index} className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2">
+                    <select required value={line.item_id} onChange={(e) => setCountLines((current) => current.map((entry, row) => row === index ? { ...entry, item_id: e.target.value } : entry))} className={selectClass}>
+                      <option value="">Select item</option>
+                      {items.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}
+                    </select>
+                    <input type="number" min="0" step="0.001" required value={line.counted_qty} onChange={(e) => setCountLines((current) => current.map((entry, row) => row === index ? { ...entry, counted_qty: e.target.value } : entry))} placeholder="Counted quantity" className={selectClass} />
+                    {countLines.length > 1 && <button type="button" onClick={() => setCountLines((current) => current.filter((_, row) => row !== index))} className="px-3 py-2 text-xs text-rose-300 border border-rose-900 rounded-lg">Remove</button>}
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setCountLines((current) => [...current, { item_id: "", counted_qty: "0" }])} className="px-3 py-2 rounded-lg border border-[#38282B] text-[#F9DB27] text-xs">Add item</button>
+                <button className="py-2 px-4 bg-[#EE1C26] hover:bg-[#C4121B] text-white rounded-lg text-xs font-semibold">Save Count</button>
+              </div>
+            </form>
+          )}
+          <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-white mb-3">Stock-Take Sessions ({stockTakes.length})</h3>
+            <div className="space-y-3">
+              {stockTakes.map((take) => (
+                <article key={take.id} className="p-4 rounded-lg bg-[#120D0E] border border-[#38282B]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div><strong className="text-white">{take.title}</strong><div className="text-xs text-stone-400 mt-1">{locations.find((location) => location.id === take.location_id)?.name || take.location_id} · {new Date(take.created_at).toLocaleString()}</div></div>
+                    <div className="flex items-center gap-2"><Badge color={take.status === "posted" ? "emerald" : "amber"}>{take.status}</Badge>{canTransact && take.status === "in_progress" && <button onClick={() => finalize(take.id)} className="px-3 py-1.5 rounded bg-[#F9DB27] text-[#120D0E] text-xs font-semibold">Finalize</button>}</div>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs text-stone-300">
+                    {take.lines.map((line) => <div key={line.id}>{itemMap[line.item_id]?.name || line.item_id}: expected {Number(line.expected_qty).toFixed(3)}, counted {Number(line.counted_qty).toFixed(3)}, variance <strong className={Number(line.variance_qty) < 0 ? "text-rose-300" : "text-emerald-300"}>{Number(line.variance_qty).toFixed(3)}</strong></div>)}
+                  </div>
+                </article>
+              ))}
+              {!stockTakes.length && <p className="text-xs text-stone-500">No stock-take sessions recorded.</p>}
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    function ReportsView({ lowStock, valuation, consumption, categories, apiFetch, token, notify }) {
+      const now = new Date();
+      const [year, setYear] = useState(String(now.getFullYear()));
+      const [month, setMonth] = useState(String(now.getMonth() + 1));
+      const [categoryId, setCategoryId] = useState("");
+      const [ledger, setLedger] = useState(null);
+
+      const queryString = () => {
+        const params = new URLSearchParams({ year, month });
+        if (categoryId) params.set("category_id", categoryId);
+        return params.toString();
+      };
+      const loadLedger = async () => {
+        try {
+          setLedger(await apiFetch(`/api/reports/monthly-ledger?${queryString()}`));
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+      const downloadLedger = async () => {
+        try {
+          const response = await fetch(`${API_BASE}/api/reports/export?report_type=monthly-ledger&${queryString()}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(error.detail || "CSV export failed");
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = `inventory-monthly-ledger-${year}-${String(month).padStart(2, "0")}.csv`;
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (err) {
+          notify(err.message, "error");
+        }
+      };
+      return (
+        <div className="space-y-6">
+          <section className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Monthly Inventory Ledger</h3>
+                <p className="text-xs text-stone-400 mt-1">Receipts, issues, adjustments, and closing stock from the auditable movement ledger.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input type="number" min="2000" max="2100" value={year} onChange={(e) => setYear(e.target.value)} aria-label="Year" className="w-24 px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white" />
+                <select value={month} onChange={(e) => setMonth(e.target.value)} aria-label="Month" className="px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white">
+                  {Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{new Date(2000, index, 1).toLocaleString(undefined, { month: "long" })}</option>)}
+                </select>
+                <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Category" className="max-w-48 px-3 py-2 rounded-lg bg-[#120D0E] border border-[#38282B] text-xs text-white">
+                  <option value="">All categories</option>
+                  {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+                <button onClick={loadLedger} className="px-3 py-2 rounded-lg bg-[#EE1C26] hover:bg-[#C4121B] text-white text-xs font-semibold">Load Ledger</button>
+                <button onClick={downloadLedger} className="px-3 py-2 rounded-lg border border-[#F9DB27]/50 text-[#F9DB27] text-xs font-semibold">Export CSV</button>
+              </div>
+            </div>
+            {ledger && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2">
+                  {[
+                    ["Opening", "opening_stock"],
+                    ["Purchases", "purchased_qty"],
+                    ["Donations", "donated_qty"],
+                    ["Other receipts", "other_receipt_qty"],
+                    ["Stock taken", "stock_taken"],
+                    ["Closing", "closing_stock"],
+                  ].map(([label, key]) => (
+                    <div key={key} className="p-3 bg-[#120D0E] rounded-lg border border-[#38282B]">
+                      <div className="text-[10px] uppercase text-stone-500">{label}</div>
+                      <div className="text-sm font-semibold text-[#F9DB27]">{Number(ledger.summary?.[key] || 0).toFixed(3)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1100px] text-left text-xs">
+                    <thead className="text-stone-400 border-b border-[#38282B]">
+                      <tr>
+                        <th className="p-2">Item</th><th className="p-2 text-right">Opening</th><th className="p-2 text-right">Purchased</th><th className="p-2 text-right">Donated</th><th className="p-2 text-right">Other in</th><th className="p-2 text-right">Total</th><th className="p-2 text-right">Requisitions</th><th className="p-2 text-right">Care dispense</th><th className="p-2 text-right">Other out</th><th className="p-2 text-right">Adjust / transfer</th><th className="p-2 text-right">Closing</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#38282B]/60">
+                      {ledger.rows.map((row) => (
+                        <tr key={row.item_id}>
+                          <td className="p-2"><span className="font-mono text-[#F9DB27]">{row.sku}</span><span className="ml-2 text-white">{row.name}</span></td>
+                          {["opening_stock", "purchased_qty", "donated_qty", "other_receipt_qty", "total_stock", "requisition_issued_qty", "daily_dispensed_qty", "other_issued_qty", "net_adjustments_and_transfers", "closing_stock"].map((key) => <td key={key} className="p-2 text-right">{Number(row[key]).toFixed(3)}</td>)}
+                        </tr>
+                      ))}
+                      {!ledger.rows.length && <tr><td colSpan="11" className="p-4 text-center text-stone-500">No active catalog items match the selected filters.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </section>
+
           <div className="bg-[#1C1416] border border-[#38282B] rounded-xl p-5">
             <h3 className="text-sm font-semibold text-white mb-3">
               Standard-Cost Valuation Breakdown (Total: <span className="text-[#F9DB27]">${Number(valuation?.total_value || 0).toFixed(2)}</span>)

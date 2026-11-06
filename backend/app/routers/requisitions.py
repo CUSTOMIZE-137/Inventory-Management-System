@@ -15,6 +15,7 @@ from app.models import (
     Requisition,
     RequisitionLine,
     RolePermission,
+    StockBalance,
     StockTransaction,
     User,
     UserRole,
@@ -227,34 +228,25 @@ def approve_requisition(
             status_code=403, detail="Requesters cannot approve their own request"
         )
     if requisition.status == "pending_supervisor":
-        stage, next_status = "supervisor_review", "pending_store_manager"
-    elif requisition.status == "pending_store_manager":
-        stage, next_status = "store_manager_review", "approved_for_dispatch"
+        stage, next_status = "manager_review", "approved_for_dispatch"
     else:
         raise HTTPException(
             status_code=409, detail="Requisition is not awaiting approval"
         )
-    if not _has_role(session, user.id, "system_admin"):
-        required_role = (
-            "supervisor" if stage == "supervisor_review" else "store_manager"
-        )
-        if not _has_role(session, user.id, required_role):
+    if not _has_role(session, user.id, "system_administrator"):
+        if not _has_role(session, user.id, "manager"):
             raise HTTPException(
-                status_code=403, detail="Wrong role for this approval stage"
+                status_code=403, detail="Only the manager can approve stock requests"
             )
-    if (
-        stage == "store_manager_review"
-        and session.scalar(
-            select(ApprovalAction.actor_id).where(
-                ApprovalAction.requisition_id == requisition.id,
-                ApprovalAction.stage == "supervisor_review",
-            )
+    if session.scalar(
+        select(ApprovalAction.actor_id).where(
+            ApprovalAction.requisition_id == requisition.id,
+            ApprovalAction.stage == stage,
         )
-        == user.id
-    ):
+    ) == user.id:
         raise HTTPException(
             status_code=403,
-            detail="A different user must approve the second stage",
+            detail="A different user must approve this request",
         )
 
     lines = list(
@@ -353,19 +345,56 @@ def dispatch_requisition(
             )
         )
     )
+    movements = []
+    for line in lines:
+        remaining = line.quantity_approved
+        if payload.location_id is not None:
+            balances = list(
+                session.scalars(
+                    select(StockBalance)
+                    .where(
+                        StockBalance.item_id == line.item_id,
+                        StockBalance.location_id == payload.location_id,
+                    )
+                    .with_for_update()
+                )
+            )
+        else:
+            balances = list(
+                session.scalars(
+                    select(StockBalance)
+                    .where(
+                        StockBalance.item_id == line.item_id,
+                        StockBalance.quantity > 0,
+                    )
+                    .order_by(StockBalance.location_id)
+                    .with_for_update()
+                )
+            )
+        for balance in balances:
+            taken = min(balance.quantity, remaining)
+            if taken > 0:
+                movements.append(
+                    MovementInput(
+                        item_id=line.item_id,
+                        location_id=balance.location_id,
+                        quantity_delta=-taken,
+                    )
+                )
+                remaining -= taken
+            if remaining <= 0:
+                break
+        if remaining > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Insufficient stock for item {line.item_id}",
+            )
+
     transaction = post_stock_transaction(
         session,
         transaction_type="issue",
         actor_id=user.id,
-        movements=[
-            MovementInput(
-                item_id=line.item_id,
-                location_id=payload.location_id,
-                quantity_delta=-line.quantity_approved,
-            )
-            for line in lines
-            if line.quantity_approved > 0
-        ],
+        movements=movements,
         reason="Dispatch for approved requisition",
         reference=requisition.reference,
         recipient=requisition.requester_id,

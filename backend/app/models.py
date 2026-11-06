@@ -124,6 +124,15 @@ class Item(TimestampMixin, Base):
     uom_code: Mapped[str] = mapped_column(
         ForeignKey("units_of_measure.code"), nullable=False
     )
+    item_type: Mapped[str] = mapped_column(
+        String(32), default="consumable", server_default="consumable", nullable=False
+    )
+    tracking_type: Mapped[str] = mapped_column(
+        String(24), default="bulk", server_default="bulk", nullable=False
+    )
+    default_issue_uom: Mapped[str | None] = mapped_column(
+        ForeignKey("units_of_measure.code"), nullable=True
+    )
     minimum_stock: Mapped[Decimal] = mapped_column(
         Numeric(18, 3), default=Decimal("0"), nullable=False
     )
@@ -143,6 +152,28 @@ class Vendor(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(320))
     phone: Mapped[str | None] = mapped_column(String(40))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class UnitConversion(Base):
+    __tablename__ = "unit_conversions"
+    __table_args__ = (
+        CheckConstraint(
+            "multiplier > 0", name="ck_unit_conversions_multiplier_positive"
+        ),
+        UniqueConstraint("item_id", "from_uom", "to_uom", name="uq_item_uom_conversion"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    item_id: Mapped[str] = mapped_column(
+        ForeignKey("items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_uom: Mapped[str] = mapped_column(
+        ForeignKey("units_of_measure.code"), nullable=False
+    )
+    to_uom: Mapped[str] = mapped_column(
+        ForeignKey("units_of_measure.code"), nullable=False
+    )
+    multiplier: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
 
 
 class Location(TimestampMixin, Base):
@@ -218,6 +249,129 @@ class RequisitionLine(Base):
     )
 
 
+class Donor(TimestampMixin, Base):
+    __tablename__ = "donors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    donor_type: Mapped[str] = mapped_column(
+        String(40), default="individual", nullable=False
+    )
+    email: Mapped[str | None] = mapped_column(String(320))
+    phone: Mapped[str | None] = mapped_column(String(40))
+    notes: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class DonationBatch(TimestampMixin, Base):
+    __tablename__ = "donation_batches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    donor_id: Mapped[str | None] = mapped_column(
+        ForeignKey("donors.id", ondelete="SET NULL"), index=True
+    )
+    received_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reference: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    received_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    lines: Mapped[list["DonationBatchLine"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class DonationBatchLine(Base):
+    __tablename__ = "donation_batch_lines"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_donation_line_qty_pos"),
+        CheckConstraint(
+            "estimated_unit_cost >= 0", name="ck_donation_line_cost_nonneg"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("donation_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
+    location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    uom_code: Mapped[str | None] = mapped_column(ForeignKey("units_of_measure.code"))
+    estimated_unit_cost: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), default=Decimal("0"), nullable=False
+    )
+    batch: Mapped["DonationBatch"] = relationship(back_populates="lines")
+
+
+class DailyCareLog(TimestampMixin, Base):
+    __tablename__ = "daily_care_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    logged_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    department_id: Mapped[str | None] = mapped_column(
+        ForeignKey("departments.id", ondelete="SET NULL")
+    )
+    location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
+    activity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipient: Mapped[str] = mapped_column(String(200), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    lines: Mapped[list["DailyCareLogLine"]] = relationship(
+        back_populates="care_log", cascade="all, delete-orphan"
+    )
+
+
+class DailyCareLogLine(Base):
+    __tablename__ = "daily_care_log_lines"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_care_log_line_qty_pos"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    care_log_id: Mapped[str] = mapped_column(
+        ForeignKey("daily_care_logs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    uom_code: Mapped[str | None] = mapped_column(ForeignKey("units_of_measure.code"))
+    normalized_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    care_log: Mapped["DailyCareLog"] = relationship(back_populates="lines")
+
+
+class StockTakeSession(TimestampMixin, Base):
+    __tablename__ = "stock_take_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
+    conducted_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="in_progress", nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lines: Mapped[list["StockTakeLine"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class StockTakeLine(Base):
+    __tablename__ = "stock_take_lines"
+    __table_args__ = (
+        CheckConstraint("counted_qty >= 0", name="ck_stock_take_counted_nonneg"),
+        UniqueConstraint("session_id", "item_id", name="uq_stock_take_session_item"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("stock_take_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), nullable=False)
+    expected_qty: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    counted_qty: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    variance_qty: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(255))
+    session: Mapped["StockTakeSession"] = relationship(back_populates="lines")
+
+
 class ApprovalAction(Base):
     __tablename__ = "approval_actions"
 
@@ -258,6 +412,18 @@ class StockTransaction(Base):
     actor_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     purchase_order_id: Mapped[str | None] = mapped_column(ForeignKey("purchase_orders.id"))
     requisition_id: Mapped[str | None] = mapped_column(ForeignKey("requisitions.id"))
+    transaction_subtype: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, index=True
+    )
+    donation_batch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("donation_batches.id"), nullable=True
+    )
+    daily_care_log_id: Mapped[str | None] = mapped_column(
+        ForeignKey("daily_care_logs.id"), nullable=True
+    )
+    stock_take_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("stock_take_sessions.id"), nullable=True
+    )
     reference: Mapped[str | None] = mapped_column(String(120))
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(128))

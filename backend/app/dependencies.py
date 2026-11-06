@@ -17,6 +17,8 @@ def current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     session: Session = Depends(get_db),
 ) -> User:
+    # Decode the token first, then load the account so inactive users lose
+    # access immediately without relying on token expiration.
     user_id = token_subject(credentials.credentials)
     user = session.get(User, user_id) if user_id else None
     if user is None or not user.is_active:
@@ -32,6 +34,8 @@ def require_permission(permission_name: str) -> Callable[..., User]:
     def check_permission(
         user: User = Depends(current_user), session: Session = Depends(get_db)
     ) -> User:
+        # Permissions are resolved through the user's roles at request time;
+        # role changes therefore apply without issuing replacement tokens.
         permission = session.scalar(
             select(Permission.name)
             .join(RolePermission, RolePermission.permission_name == Permission.name)

@@ -16,11 +16,14 @@ from app.models import (
     StockBalance,
     StockMovement,
     StockTransaction,
+    UnitConversion,
 )
 from app.schemas import MovementInput
 
 
 def _insert_missing_balance(session: Session, item_id: str, location_id: str) -> None:
+    # A zero row lets the later lock-and-update path use the same logic for
+    # first-time stock and existing balances.
     values = {"item_id": item_id, "location_id": location_id, "quantity": Decimal("0")}
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
@@ -44,7 +47,12 @@ def post_stock_transaction(
     recipient: str | None = None,
     purchase_order_id: str | None = None,
     requisition_id: str | None = None,
+    transaction_subtype: str | None = None,
+    donation_batch_id: str | None = None,
+    daily_care_log_id: str | None = None,
+    stock_take_session_id: str | None = None,
 ) -> StockTransaction:
+    """Validate, lock, and atomically post stock movements and their audit rows."""
     if not reason.strip():
         raise HTTPException(status_code=422, detail="A reason is required")
     if idempotency_key is not None and not 1 <= len(idempotency_key) <= 128:
@@ -83,6 +91,20 @@ def post_stock_transaction(
                 status_code=422, detail="Transfer movements must balance per item"
             )
 
+    inferred_subtype = (
+        "purchase_receipt"
+        if purchase_order_id is not None and transaction_type == "receipt"
+        else "requisition_issue"
+        if requisition_id is not None and transaction_type == "issue"
+        else "donation_receipt"
+        if donation_batch_id is not None
+        else "daily_dispense"
+        if daily_care_log_id is not None
+        else "stock_take_adjustment"
+        if stock_take_session_id is not None
+        else None
+    )
+    effective_subtype = transaction_subtype or inferred_subtype
     canonical = {
         "type": transaction_type,
         "movements": [
@@ -95,6 +117,14 @@ def post_stock_transaction(
         "purchase_order_id": purchase_order_id,
         "requisition_id": requisition_id,
     }
+    if transaction_subtype is not None:
+        canonical["transaction_subtype"] = transaction_subtype
+    if donation_batch_id is not None:
+        canonical["donation_batch_id"] = donation_batch_id
+    if daily_care_log_id is not None:
+        canonical["daily_care_log_id"] = daily_care_log_id
+    if stock_take_session_id is not None:
+        canonical["stock_take_session_id"] = stock_take_session_id
     request_hash = hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -114,6 +144,8 @@ def post_stock_transaction(
             return existing
 
     # Create and lock rows in a deterministic order to avoid transfer deadlocks.
+    # The active-record checks happen before the balance lock so invalid
+    # references cannot create partial inventory changes.
     ordered_keys = sorted(consolidated)
     active_items = {
         item.id: item
@@ -207,10 +239,16 @@ def post_stock_transaction(
         recipient=recipient,
         purchase_order_id=purchase_order_id,
         requisition_id=requisition_id,
+        transaction_subtype=effective_subtype,
+        donation_batch_id=donation_batch_id,
+        daily_care_log_id=daily_care_log_id,
+        stock_take_session_id=stock_take_session_id,
         idempotency_key=idempotency_key,
         request_hash=request_hash if idempotency_key else None,
     )
     if idempotency_key:
+        # The unique key protects concurrent retries; the request hash prevents
+        # a reused key from silently changing the original operation.
         dialect = session.get_bind().dialect.name
         insert_statement = (
             pg_insert(StockTransaction)
@@ -254,6 +292,8 @@ def post_stock_transaction(
         delta = consolidated[key]
         after = before + delta
         balance.quantity = after
+        # Movements capture both sides of the balance change for audit and
+        # reporting; the balance is the current-state projection.
         session.add(
             StockMovement(
                 transaction_id=transaction.id,
@@ -266,6 +306,55 @@ def post_stock_transaction(
         )
     session.flush()
     return transaction
+
+
+def normalize_item_quantity(
+    session: Session,
+    item: Item,
+    quantity: Decimal,
+    uom_code: str | None,
+) -> Decimal:
+    # All stock tables use the item's base unit, while callers may enter a
+    # configured issue or receiving unit.
+    if uom_code is None or uom_code == item.uom_code:
+        normalized = quantity.quantize(Decimal("0.001"))
+    else:
+        conversion = session.scalar(
+            select(UnitConversion).where(
+                UnitConversion.item_id == item.id,
+                UnitConversion.from_uom == uom_code,
+                UnitConversion.to_uom == item.uom_code,
+            )
+        )
+        if conversion is not None:
+            normalized = (quantity * conversion.multiplier).quantize(
+                Decimal("0.001")
+            )
+        else:
+            inverse = session.scalar(
+                select(UnitConversion).where(
+                    UnitConversion.item_id == item.id,
+                    UnitConversion.from_uom == item.uom_code,
+                    UnitConversion.to_uom == uom_code,
+                )
+            )
+            if inverse is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"No unit conversion defined for item {item.sku} "
+                        f"from {uom_code} to {item.uom_code}"
+                    ),
+                )
+            normalized = (quantity / inverse.multiplier).quantize(
+                Decimal("0.001")
+            )
+    if normalized <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Quantity is too small to represent in the item's base unit",
+        )
+    return normalized
 
 
 def post_transfer(

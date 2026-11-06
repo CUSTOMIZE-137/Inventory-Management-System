@@ -17,7 +17,8 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://inventory:change-me@db:5432/inventory_db
       JWT_SECRET: replace-this-with-a-random-secret-at-least-32-characters

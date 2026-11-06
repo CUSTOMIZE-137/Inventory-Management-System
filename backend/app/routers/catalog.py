@@ -11,6 +11,7 @@ from app.models import (
     Item,
     Location,
     UnitOfMeasure,
+    UnitConversion,
     User,
     Vendor,
 )
@@ -27,6 +28,8 @@ from app.schemas import (
     LocationUpdate,
     UnitOfMeasureCreate,
     UnitOfMeasureRead,
+    UnitConversionCreate,
+    UnitConversionRead,
     VendorCreate,
     VendorRead,
     VendorUpdate,
@@ -107,12 +110,70 @@ def _check_location_parent(
 
 
 def _validate_item_references(
-    session: Session, uom_code: str | None, category_id: str | None
+    session: Session,
+    uom_code: str | None,
+    category_id: str | None,
+    default_issue_uom: str | None = None,
 ) -> None:
-    if uom_code is not None and session.get(UnitOfMeasure, uom_code) is None:
-        raise HTTPException(status_code=404, detail="Unit of measure not found")
+    for code in (uom_code, default_issue_uom):
+        if code is not None and session.get(UnitOfMeasure, code) is None:
+            raise HTTPException(status_code=404, detail="Unit of measure not found")
     if category_id is not None and session.get(Category, category_id) is None:
         raise HTTPException(status_code=404, detail="Category not found")
+
+
+@router.post(
+    "/unit-conversions",
+    response_model=UnitConversionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_unit_conversion(
+    payload: UnitConversionCreate,
+    session: Session = Depends(get_db),
+    _user: User = Depends(require_permission("catalog:write")),
+) -> UnitConversion:
+    if session.get(Item, payload.item_id) is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if payload.from_uom == payload.to_uom:
+        raise HTTPException(status_code=422, detail="Conversion units must differ")
+    for code in (payload.from_uom, payload.to_uom):
+        if session.get(UnitOfMeasure, code) is None:
+            raise HTTPException(status_code=404, detail="Unit of measure not found")
+    if session.scalar(
+        select(UnitConversion.id).where(
+            UnitConversion.item_id == payload.item_id,
+            UnitConversion.from_uom == payload.from_uom,
+            UnitConversion.to_uom == payload.to_uom,
+        )
+    ):
+        raise HTTPException(status_code=409, detail="Unit conversion already exists")
+    conversion = UnitConversion(**payload.model_dump())
+    session.add(conversion)
+    try:
+        session.flush()
+    except IntegrityError as error:
+        raise HTTPException(status_code=409, detail="Unit conversion conflict") from error
+    return conversion
+
+
+@router.get("/unit-conversions", response_model=list[UnitConversionRead])
+def list_unit_conversions(
+    session: Session = Depends(get_db),
+    _user: User = Depends(require_permission("catalog:read")),
+    item_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[UnitConversion]:
+    query = select(UnitConversion)
+    if item_id is not None:
+        query = query.where(UnitConversion.item_id == item_id)
+    return list(
+        session.scalars(
+            query.order_by(UnitConversion.item_id, UnitConversion.from_uom)
+            .limit(limit)
+            .offset(offset)
+        )
+    )
 
 
 @router.get("/items", response_model=list[ItemRead])
@@ -155,7 +216,12 @@ def create_item(
 ) -> Item:
     if session.scalar(select(Item.id).where(Item.sku == payload.sku)) is not None:
         raise HTTPException(status_code=409, detail="Item SKU already exists")
-    _validate_item_references(session, payload.uom_code, payload.category_id)
+    _validate_item_references(
+        session,
+        payload.uom_code,
+        payload.category_id,
+        payload.default_issue_uom,
+    )
     item = Item(**payload.model_dump())
     session.add(item)
     try:
@@ -185,7 +251,10 @@ def update_item(
         ):
             raise HTTPException(status_code=409, detail="Item SKU already exists")
     _validate_item_references(
-        session, updates.get("uom_code"), updates.get("category_id")
+        session,
+        updates.get("uom_code", item.uom_code),
+        updates.get("category_id", item.category_id),
+        updates.get("default_issue_uom", item.default_issue_uom),
     )
     for field, value in updates.items():
         setattr(item, field, value)

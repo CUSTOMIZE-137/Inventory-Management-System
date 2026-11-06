@@ -53,6 +53,9 @@ class ItemCreate(BaseModel):
     name: str = Field(min_length=1, max_length=240)
     category_id: str | None = None
     uom_code: str
+    item_type: Literal["consumable", "assistive_asset"] = "consumable"
+    tracking_type: Literal["bulk", "serialized"] = "bulk"
+    default_issue_uom: str | None = None
     minimum_stock: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=3)
     unit_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=4)
     is_restricted: bool = False
@@ -64,6 +67,9 @@ class ItemUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=240)
     category_id: str | None = None
     uom_code: str | None = None
+    item_type: Literal["consumable", "assistive_asset"] | None = None
+    tracking_type: Literal["bulk", "serialized"] | None = None
+    default_issue_uom: str | None = None
     minimum_stock: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=3)
     unit_cost: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     is_restricted: bool | None = None
@@ -103,6 +109,19 @@ class UnitOfMeasureCreate(BaseModel):
 class UnitOfMeasureRead(BaseModel):
     code: str
     name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UnitConversionCreate(BaseModel):
+    item_id: str
+    from_uom: str
+    to_uom: str
+    multiplier: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+
+
+class UnitConversionRead(UnitConversionCreate):
+    id: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -160,6 +179,15 @@ class StockPostRequest(BaseModel):
         return self
 
 
+class StockWithdrawRequest(BaseModel):
+    item_id: str
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    uom_code: str | None = None
+    reason: str = Field(default="Requester stock withdrawal", min_length=1, max_length=2000)
+    reference: str | None = Field(default=None, max_length=120)
+    recipient: str = Field(min_length=1, max_length=200)
+
+
 class TransferRequest(BaseModel):
     item_id: str
     source_location_id: str
@@ -188,6 +216,159 @@ class VendorRead(BaseModel):
     email: str | None
     phone: str | None
     is_active: bool = True
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DonorCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    donor_type: Literal["individual", "organization", "foundation", "government"] = (
+        "individual"
+    )
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=40)
+    notes: str | None = None
+
+
+class DonorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    donor_type: Literal["individual", "organization", "foundation", "government"] | None = None
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=40)
+    notes: str | None = None
+    is_active: bool | None = None
+
+
+class DonorRead(DonorCreate):
+    id: str
+    is_active: bool = True
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DonationBatchLineInput(BaseModel):
+    item_id: str
+    location_id: str
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    uom_code: str | None = None
+    estimated_unit_cost: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=18, decimal_places=4
+    )
+
+
+class DonationBatchCreate(BaseModel):
+    donor_id: str | None = None
+    reference: str = Field(min_length=1, max_length=120)
+    notes: str | None = None
+    lines: list[DonationBatchLineInput] = Field(min_length=1, max_length=100)
+
+
+class DonationBatchLineRead(BaseModel):
+    id: str
+    item_id: str
+    location_id: str
+    quantity: Decimal
+    uom_code: str | None
+    estimated_unit_cost: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DonationBatchRead(BaseModel):
+    id: str
+    donor_id: str | None
+    received_by: str
+    reference: str
+    received_date: datetime
+    notes: str | None
+    created_at: datetime
+    transaction_id: str | None = None
+    lines: list[DonationBatchLineRead]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DailyCareLogLineInput(BaseModel):
+    item_id: str
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=3)
+    uom_code: str | None = None
+
+
+class DailyCareLogCreate(BaseModel):
+    department_id: str | None = None
+    location_id: str
+    activity_type: Literal[
+        "kitchen_meal",
+        "nursery_hygiene",
+        "therapy_session",
+        "housekeeping",
+        "general_issue",
+    ]
+    recipient: str = Field(min_length=1, max_length=200)
+    notes: str | None = None
+    lines: list[DailyCareLogLineInput] = Field(min_length=1, max_length=100)
+
+
+class DailyCareLogLineRead(BaseModel):
+    id: str
+    item_id: str
+    quantity: Decimal
+    uom_code: str | None
+    normalized_quantity: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DailyCareLogRead(BaseModel):
+    id: str
+    logged_by: str
+    department_id: str | None
+    location_id: str
+    activity_type: str
+    recipient: str
+    notes: str | None
+    created_at: datetime
+    transaction_id: str | None = None
+    lines: list[DailyCareLogLineRead]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StockTakeLineInput(BaseModel):
+    item_id: str
+    counted_qty: Decimal = Field(ge=0, max_digits=18, decimal_places=3)
+    notes: str | None = None
+
+
+class StockTakeSessionCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    location_id: str
+    notes: str | None = None
+    lines: list[StockTakeLineInput] = Field(min_length=1, max_length=500)
+
+
+class StockTakeLineRead(BaseModel):
+    id: str
+    item_id: str
+    expected_qty: Decimal
+    counted_qty: Decimal
+    variance_qty: Decimal
+    notes: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StockTakeSessionRead(BaseModel):
+    id: str
+    title: str
+    location_id: str
+    conducted_by: str
+    status: str
+    notes: str | None
+    posted_at: datetime | None
+    created_at: datetime
+    lines: list[StockTakeLineRead]
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -293,7 +474,7 @@ class RequisitionRead(BaseModel):
 
 
 class DispatchInput(BaseModel):
-    location_id: str
+    location_id: str | None = None
 
 
 class StockMovementRead(BaseModel):
@@ -315,6 +496,10 @@ class TransactionRead(BaseModel):
     actor_id: str | None = None
     purchase_order_id: str | None = None
     requisition_id: str | None = None
+    transaction_subtype: str | None = None
+    donation_batch_id: str | None = None
+    daily_care_log_id: str | None = None
+    stock_take_session_id: str | None = None
     reference: str | None
     reason: str
     recipient: str | None

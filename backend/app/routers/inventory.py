@@ -6,15 +6,17 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_db
 from app.dependencies import current_user, require_permission
-from app.models import StockBalance, StockMovement, StockTransaction, User
+from app.models import Item, StockBalance, StockMovement, StockTransaction, User
 from app.schemas import (
+    MovementInput,
     StockLevelRead,
     StockMovementRead,
     StockPostRequest,
+    StockWithdrawRequest,
     TransactionRead,
     TransferRequest,
 )
-from app.services.inventory import post_stock_transaction, post_transfer
+from app.services.inventory import normalize_item_quantity, post_stock_transaction, post_transfer
 
 router = APIRouter(prefix="/api")
 
@@ -144,6 +146,66 @@ def create_stock_transaction(
         reason=payload.reason,
         reference=payload.reference,
         recipient=payload.recipient,
+        idempotency_key=idempotency_key,
+    )
+    return load_transaction(session, transaction.id)
+
+
+@router.post("/stock/withdraw", response_model=TransactionRead, status_code=201)
+def withdraw_stock(
+    payload: StockWithdrawRequest,
+    session: Session = Depends(get_db),
+    user: User = Depends(current_user),
+    _permission: User = Depends(require_permission("inventory:withdraw")),
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> StockTransaction:
+    item = session.scalar(
+        select(Item).where(Item.id == payload.item_id, Item.is_active.is_(True))
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Active item not found")
+    quantity = normalize_item_quantity(session, item, payload.quantity, payload.uom_code)
+    balances = list(
+        session.scalars(
+            select(StockBalance)
+            .where(
+                StockBalance.item_id == item.id,
+                StockBalance.quantity > 0,
+            )
+            .order_by(StockBalance.location_id)
+            .with_for_update()
+        )
+    )
+    available = sum((balance.quantity for balance in balances), start=quantity * 0)
+    if available < quantity:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Insufficient stock. Available quantity: {available}",
+        )
+    remaining = quantity
+    movements = []
+    for balance in balances:
+        taken = min(balance.quantity, remaining)
+        if taken > 0:
+            movements.append(
+                MovementInput(
+                    item_id=item.id,
+                    location_id=balance.location_id,
+                    quantity_delta=-taken,
+                )
+            )
+            remaining -= taken
+        if remaining <= 0:
+            break
+    transaction = post_stock_transaction(
+        session,
+        transaction_type="issue",
+        actor_id=user.id,
+        movements=movements,
+        reason=payload.reason,
+        reference=payload.reference,
+        recipient=payload.recipient,
+        transaction_subtype="requester_withdrawal",
         idempotency_key=idempotency_key,
     )
     return load_transaction(session, transaction.id)

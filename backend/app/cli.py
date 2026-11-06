@@ -1,8 +1,12 @@
 import argparse
+import hashlib
+import re
+import unicodedata
 from decimal import Decimal
 from getpass import getpass
+from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_engine
@@ -28,39 +32,33 @@ from app.services.inventory import post_stock_transaction
 
 
 ROLE_PERMISSIONS = {
-    "warehouse_clerk": {"catalog:read", "inventory:read", "inventory:transact"},
-    "supervisor": {
-        "catalog:read",
-        "inventory:read",
-        "requisitions:approve",
-        "reports:read",
-    },
-    "store_manager": {
-        "catalog:read",
-        "inventory:read",
-        "inventory:transact",
-        "requisitions:approve",
-        "requisitions:dispatch",
-        "reports:read",
-    },
-    "requester": {
-        "catalog:read",
-        "inventory:read",
-        "requisitions:request",
-        "requisitions:confirm",
-    },
-    "procurement": {"catalog:read", "catalog:write", "reports:read"},
-    "system_admin": {
+    "system_administrator": {
         "catalog:read",
         "catalog:write",
         "inventory:read",
         "inventory:transact",
         "reports:read",
         "users:manage",
-        "requisitions:request",
         "requisitions:approve",
         "requisitions:dispatch",
+        "requisitions:request",
         "requisitions:confirm",
+        "inventory:withdraw",
+    },
+    "manager": {
+        "catalog:read",
+        "catalog:write",
+        "inventory:read",
+        "inventory:transact",
+        "reports:read",
+        "requisitions:approve",
+        "requisitions:dispatch",
+        "inventory:withdraw",
+    },
+    "requester": {
+        "catalog:read",
+        "inventory:read",
+        "inventory:withdraw",
     },
 }
 
@@ -135,7 +133,7 @@ def create_admin(email: str, name: str, password: str | None = None) -> None:
     create_user_account(
         email=email,
         name=name,
-        roles=["system_admin"],
+        roles=["system_administrator"],
         password=password,
     )
 
@@ -154,9 +152,8 @@ def seed_demo() -> None:
             session.flush()
 
         accounts = [
-            ("admin@example.org", "System Administrator", "system_admin"),
-            ("supervisor@example.org", "Stock Supervisor", "supervisor"),
-            ("manager@example.org", "Central Store Manager", "store_manager"),
+            ("admin@example.org", "System Administrator", "system_administrator"),
+            ("manager@example.org", "Stock Manager", "manager"),
             ("requester@example.org", "Stock Requester", "requester"),
         ]
         admin_user: User | None = None
@@ -173,7 +170,7 @@ def seed_demo() -> None:
                 session.add(user)
                 session.flush()
                 session.add(UserRole(user_id=user.id, role_name=role_name))
-            if role_name == "system_admin":
+            if role_name == "system_administrator":
                 admin_user = user
 
         for code, uom_name in [("each", "Each"), ("box", "Box"), ("m", "Meter")]:
@@ -260,6 +257,7 @@ def seed_demo() -> None:
                 ],
                 reason="Initial opening balance seed",
                 reference="OPEN-BAL-001",
+                transaction_subtype="opening_balance",
                 idempotency_key="demo-seed-opening-balance",
             )
             po = PurchaseOrder(
@@ -280,11 +278,133 @@ def seed_demo() -> None:
             )
 
 
+def import_excel_catalog(file_path: str, sheet_name: str) -> tuple[int, int]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise RuntimeError(
+            "Excel import requires openpyxl; install backend requirements first"
+        ) from error
+
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Excel workbook not found: {path}")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(
+            f"Worksheet {sheet_name!r} not found; available sheets: "
+            f"{', '.join(workbook.sheetnames)}"
+        )
+    worksheet = workbook[sheet_name]
+    header_row = next(
+        (
+            row_number
+            for row_number, row in enumerate(
+                worksheet.iter_rows(
+                    min_row=1, max_row=min(worksheet.max_row, 30)
+                ),
+                start=1,
+            )
+            if str(row[0].value or "").strip().casefold() == "items"
+        ),
+        None,
+    )
+    if header_row is None:
+        raise ValueError(f"Worksheet {sheet_name!r} has no 'Items' header in column A")
+
+    parsed_rows: list[tuple[str, str | None]] = []
+    current_category: str | None = None
+    seen_names: set[str] = set()
+    for row in worksheet.iter_rows(min_row=header_row + 1):
+        cell = row[0]
+        name = str(cell.value or "").strip()
+        if not name:
+            continue
+        has_values_elsewhere = any(candidate.value is not None for candidate in row[1:])
+        if not has_values_elsewhere and cell.font.bold:
+            current_category = name
+            continue
+        normalized_name = name.casefold()
+        if normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        parsed_rows.append((name, current_category))
+
+    if not parsed_rows:
+        raise ValueError(f"No catalog item names found in worksheet {sheet_name!r}")
+
+    created = 0
+    skipped = 0
+    with SessionLocal.begin() as session:
+        unit = session.get(UnitOfMeasure, "each")
+        if unit is None:
+            session.add(UnitOfMeasure(code="each", name="Each"))
+            session.flush()
+        categories: dict[str, Category] = {}
+        for name, category_name in parsed_rows:
+            existing = session.scalar(
+                select(Item).where(func.lower(Item.name) == name.casefold())
+            )
+            if existing is not None:
+                skipped += 1
+                continue
+            category_id = None
+            if category_name is not None:
+                category_key = category_name.casefold()
+                category = categories.get(category_key)
+                if category is None:
+                    category = session.scalar(
+                        select(Category).where(
+                            func.lower(Category.name) == category_key
+                        )
+                    )
+                    if category is None:
+                        category = Category(name=category_name)
+                        session.add(category)
+                        session.flush()
+                    categories[category_key] = category
+                category_id = category.id
+
+            ascii_name = (
+                unicodedata.normalize("NFKD", name)
+                .encode("ascii", "ignore")
+                .decode("ascii")
+            )
+            slug = re.sub(r"[^A-Za-z0-9]+", "-", ascii_name).strip("-").upper()
+            suffix = (
+                hashlib.sha256(name.casefold().encode("utf-8"))
+                .hexdigest()[:8]
+                .upper()
+            )
+            sku = f"XLS-{slug[:67] or 'ITEM'}-{suffix}"
+            if session.scalar(select(Item.id).where(Item.sku == sku)) is not None:
+                raise ValueError(
+                    f"Generated SKU {sku!r} already belongs to a different item"
+                )
+            session.add(
+                Item(
+                    sku=sku,
+                    name=name,
+                    category_id=category_id,
+                    uom_code="each",
+                )
+            )
+            created += 1
+    workbook.close()
+    return created, skipped
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inventory system administration")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init-roles")
     commands.add_parser("seed-demo")
+    excel_parser = commands.add_parser(
+        "import-excel",
+        help="Import item names and category sections from an Excel worksheet",
+    )
+    excel_parser.add_argument("--file", required=True)
+    excel_parser.add_argument("--sheet", default="APRIL2026")
 
     admin_parser = commands.add_parser("create-admin")
     admin_parser.add_argument("--email", required=True)
@@ -309,6 +429,9 @@ def main() -> None:
         initialize_roles()
     elif args.command == "seed-demo":
         seed_demo()
+    elif args.command == "import-excel":
+        created, skipped = import_excel_catalog(args.file, args.sheet)
+        print(f"Imported {created} catalog items; skipped {skipped} existing items.")
     elif args.command == "create-admin":
         create_admin(args.email, args.name, password=args.password)
     elif args.command == "create-user":
