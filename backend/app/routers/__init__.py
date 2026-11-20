@@ -1,15 +1,3 @@
-from app.routers import (
-    auth,
-    catalog,
-    inventory,
-    purchase_orders,
-    requisitions,
-)
+from app.routers import auth, items, transactions, users
 
-__all__ = [
-    "auth",
-    "catalog",
-    "inventory",
-    "purchase_orders",
-    "requisitions",
-]
+__all__ = ["auth", "items", "transactions", "users"]

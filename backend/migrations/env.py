@@ -6,12 +6,12 @@ from sqlalchemy import engine_from_config, pool
 from app.config import get_settings
 from app.models import Base
 
-
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-database_url = get_settings().database_url.replace("%", "%%")
+settings = get_settings()
+database_url = settings.alembic_database_url.replace("%", "%%")
 config.set_main_option("sqlalchemy.url", database_url)
 target_metadata = Base.metadata
 

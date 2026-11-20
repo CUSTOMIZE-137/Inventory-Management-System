@@ -2,25 +2,26 @@ from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models import Permission, RolePermission, User, UserRole
-from app.security import token_subject
-
+from app.models import User, UserRole
+from app.security import decode_token_subject
 
 bearer_scheme = HTTPBearer()
 
 
-def current_user(
+async def current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    session: Session = Depends(get_db),
+    session: AsyncSession = Depends(get_db),
 ) -> User:
-    # Decode the token first, then load the account so inactive users lose
-    # access immediately without relying on token expiration.
-    user_id = token_subject(credentials.credentials)
-    user = session.get(User, user_id) if user_id else None
+    """Authenticate Bearer JWT and reload the live User record from the database.
+
+    Re-fetching from the DB ensures role updates and account deactivations take effect
+    immediately rather than waiting for an issued JWT to expire.
+    """
+    user_id = decode_token_subject(credentials.credentials)
+    user = await session.get(User, user_id) if user_id else None
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -30,23 +31,16 @@ def current_user(
     return user
 
 
-def require_permission(permission_name: str) -> Callable[..., User]:
-    def check_permission(
-        user: User = Depends(current_user), session: Session = Depends(get_db)
-    ) -> User:
-        # Permissions are resolved through the user's roles at request time;
-        # role changes therefore apply without issuing replacement tokens.
-        permission = session.scalar(
-            select(Permission.name)
-            .join(RolePermission, RolePermission.permission_name == Permission.name)
-            .join(UserRole, UserRole.role_name == RolePermission.role_name)
-            .where(
-                UserRole.user_id == user.id,
-                Permission.name == permission_name,
+def require_roles(*allowed_roles: UserRole) -> Callable[..., User]:
+    """Dependency factory enforcing that the authenticated user holds one of `allowed_roles`."""
+    allowed = frozenset(allowed_roles)
+
+    async def check_role(user: User = Depends(current_user)) -> User:
+        if user.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient role permissions for this action",
             )
-        )
-        if permission is None:
-            raise HTTPException(status_code=403, detail="Permission denied")
         return user
 
-    return check_permission
+    return check_role

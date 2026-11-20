@@ -1,171 +1,120 @@
-# Inventory Management System
+# Inventory Management System (PWA)
 
-A FastAPI and PostgreSQL backend foundation for auditable, multi-location inventory. The implementation includes catalog and location endpoints, item-specific unit conversions, user and role management, JWT authentication with rate limiting, purchase order receiving, in-kind donations, daily care dispensing, stock-take reconciliation, a staged requisition workflow with partial quantity approvals, stock receipts/issues/adjustments/transfers, audit movement queries, idempotency keys, and low-stock, valuation, consumption, and monthly-ledger reports.
+A focused, zero-bloat, offline-first **Inventory Management System** built with **FastAPI (async)**, **SQLAlchemy 2.0 (async)**, **PostgreSQL 16**, **React 19 + TypeScript (strict)**, **Tailwind CSS + shadcn/ui**, **TanStack Query v5**, **Dexie.js (IndexedDB)**, and **Workbox (`vite-plugin-pwa`)**.
 
-## Architecture
+## Core Role-Based Access Control (RBAC)
 
-- **API:** FastAPI with modular routers (`app/routers/auth.py`, `catalog.py`, `inventory.py`, `purchase_orders.py`, `requisitions.py`), Pydantic request/response validation, and CORS middleware.
-- **Database:** PostgreSQL via SQLAlchemy 2.x and psycopg with lazy engine initialization (`app/db.py`). Stock updates run in the request's database transaction, lock balance rows using `SELECT ... FOR UPDATE`, and reject any resulting negative balance.
-- **Authentication:** JWT bearer tokens (`sub`, `iat`, `exp`, `jti`); Argon2 password hashing; sliding-window login rate limiting (`429 Too Many Requests`).
-- **Authorization:** Roles map to explicit permissions in `user_roles`, `roles`, `permissions`, and `role_permissions`.
-- **Audit:** Posted stock transactions and per-location balance changes are stored separately. The PostgreSQL migration adds triggers that reject update, delete, and truncate operations on stock audit tables.
-- **Approvals:** Requisitions progress through supervisor review, store-manager approval (supporting partial line quantity approvals), dispatch, and requester receipt confirmation. Restricted or approval-required items cannot be issued through the generic issue route.
-- **Specialized stock workflows:** Donation batches, daily-care logs, and stock takes retain their source records and link to canonical receipt, issue, or adjustment transactions. The Donations in Kind screen summarizes receipts by catalog item and month for a selected year, using each item's base unit; historical workbook figures are not imported. Item-specific unit conversions normalize quantities to each item's base unit before posting.
+The entire application is built around three strict user roles:
 
-## Run locally
+| Role | Scope & Permissions | Restrictions |
+|---|---|---|
+| **`ADMIN`** (System Administrator) | Create/update users, assign roles, activate/deactivate accounts, reset credentials, inspect global audit logs and system KPIs | Governance and oversight focus; does not record operational store intake/take-out |
+| **`STORE_MANAGER`** (Store Manager) | Create/edit catalog items (SKU, barcode, name, category, unit, reorder level), record incoming stock (`STOCK_IN`), perform verified count corrections (`ADJUSTMENT`), view low-stock alerts and full store ledger | Cannot manage users or assign roles; cannot log `STOCK_OUT` |
+| **`REQUESTOR`** (Requestor) | Search/scan available store items with live stock levels, take out stock (`STOCK_OUT`) with live before/after remaining-stock preview, view personal take-out history | Read-only catalog access; cannot log `STOCK_IN`, edit items, or manage users |
 
-Requirements: Python 3.10+ (and PostgreSQL 14+ or Docker Compose for production-grade database features; SQLite is also supported for quick local evaluation).
+## Architecture Highlights
 
-### Option 1: Quick Start (Local SQLite + Demo Data, No Postgres Required)
+- **3-Table Streamlined Schema (via Alembic)**: `users`, `items`, and immutable `stock_transactions`.
+- **Automatic Atomic Stock Calculation**: Every `STOCK_IN`, `STOCK_OUT`, and `ADJUSTMENT` runs inside a single ACID transaction with `SELECT ... FOR UPDATE` row-level locking on `items`, validating `current_stock >= requested_quantity` (rejecting overdraws with `400 Bad Request` stating the exact available quantity), updating `items.current_stock`, and inserting an immutable ledger snapshot (`previous_stock`, `remaining_stock`).
+- **Idempotent Offline Replay**: All write endpoints (`POST /api/v1/transactions` and `POST /api/v1/transactions/sync`) require a client-generated UUIDv4 `idempotency_key`. Replaying a duplicate key returns `200 OK` with the original transaction without double-calculating stock.
+- **Offline-First PWA**: App shell assets are cached (`CacheFirst`), items and pending transactions live in IndexedDB (`Dexie.js`), and failed `POST /api/v1/transactions*` calls are backed by Workbox `BackgroundSyncPlugin` (`stock-transactions-queue`).
+- **Barcode Scanning**: Uses native `BarcodeDetector` with lazy-loaded `zxing-wasm` fallback.
 
-If you want to run the backend and branded web UI immediately on your machine without setting up PostgreSQL:
+## API Reference (`/api/v1`)
+
+| Method | Endpoint | Allowed Role(s) | Purpose |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/login` | Public (rate-limited) | Issue JWT access token + user profile |
+| `GET` | `/api/v1/auth/me` | Any authenticated | Active user profile |
+| `GET`, `POST`, `PATCH` | `/api/v1/users`, `/api/v1/users/{id}` | `ADMIN` | Provision users, update roles, toggle active, reset passwords |
+| `GET` | `/api/v1/audit/summary` | `ADMIN` | System-wide user, catalog, low-stock, and ledger summary |
+| `GET` | `/api/v1/items`, `/api/v1/items/{id}`, `/api/v1/items/lookup/{code}` | Any authenticated | Browse catalog, filter low stock, lookup by barcode/SKU |
+| `POST`, `PATCH` | `/api/v1/items`, `/api/v1/items/{id}` | `STORE_MANAGER` | Create/edit catalog metadata (stock always mutated via ledger) |
+| `POST` | `/api/v1/transactions` | `STORE_MANAGER` (`STOCK_IN`, `ADJUSTMENT`), `REQUESTOR` (`STOCK_OUT`) | Atomic stock transaction (`201 Created`, or `200 OK` on idempotent replay) |
+| `POST` | `/api/v1/transactions/sync` | `STORE_MANAGER`, `REQUESTOR` | Batch idempotent replay of offline Dexie queue |
+| `GET` | `/api/v1/transactions` | Any authenticated | Global ledger (`ADMIN`, `STORE_MANAGER`) or personal history (`REQUESTOR`) |
+| `GET` | `/health`, `/ready` | Public | Liveness and async database readiness probes |
+
+## Local Development
+
+### 1. Backend (FastAPI + Alembic + SQLite or PostgreSQL)
 
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# Configure SQLite and JWT secret for local development
-$env:DATABASE_URL = "sqlite+pysqlite:///./inventory_dev.db"
+$env:DATABASE_URL = "sqlite+aiosqlite:///./inventory_dev.db"
 $env:JWT_SECRET = "local-dev-secret-key-with-at-least-32-chars"
 
-# Seed roles, demo accounts, catalog items, locations, and opening stock
-python -m app.cli seed-demo
-
-# Start the FastAPI server (serves both the Web UI and REST API)
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+.\.venv\Scripts\alembic.exe upgrade head
+.\.venv\Scripts\python.exe -m app.cli seed-demo
+.\.venv\Scripts\uvicorn.exe app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Then open **`http://127.0.0.1:8000`** in your browser to access the web interface.
+**Seeded Demo Accounts** (password: `AdminPassword123!`):
+- `admin@example.org` (`ADMIN`)
+- `manager@example.org` (`STORE_MANAGER`)
+- `requestor@example.org` (`REQUESTOR`)
 
-#### Pre-seeded Demo Accounts (`python -m app.cli seed-demo`)
-
-| Role | Email | Password |
-|---|---|---|
-| System Administrator | `admin@example.org` | `AdminPassword123!` |
-| Stock Supervisor | `supervisor@example.org` | `AdminPassword123!` |
-| Central Store Manager | `manager@example.org` | `AdminPassword123!` |
-| Stock Requester | `requester@example.org` | `AdminPassword123!` |
-
----
-
-### Option 2: Local Virtual Environment with PostgreSQL
+### 2. Frontend (React 19 + Vite PWA)
 
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+cd frontend
+npm install
+npm run dev
 ```
 
-Set `DATABASE_URL` in `backend\.env` to the PostgreSQL connection string for your database (for example, `postgresql+psycopg://inventory:change-me@localhost:5432/inventory_db`). Replace `JWT_SECRET` with a random value of at least 32 characters. Create the database before applying migrations.
+Open `http://localhost:5173`. To regenerate strict TypeScript OpenAPI types against a running backend:
 
 ```powershell
-alembic upgrade head
-python -m app.cli init-roles
-
-# Either seed the full demo dataset:
-python -m app.cli seed-demo
-
-# Or provision individual accounts manually:
-python -m app.cli create-admin --email admin@example.org --name "System Administrator"
-python -m app.cli create-user --email clerk@example.org --name "Warehouse Clerk" --role warehouse_clerk --department "Logistics"
-
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+npm run generate:api
 ```
 
----
+### 3. Production Stack via Docker Compose
 
-### Option 3: Using Docker Compose
+Runs PostgreSQL 16, FastAPI (`:8000`), and Nginx serving the built PWA (`:80`):
 
 ```powershell
 docker compose up --build
 ```
 
-Once the containers are running, you can seed the demo accounts and sample inventory in a second terminal:
+Seed demo accounts inside the running backend container:
 
 ```powershell
 docker compose exec backend python -m app.cli seed-demo
 ```
 
----
+Open `http://localhost` (PWA) or `http://localhost:8000/docs` (OpenAPI docs).
 
-### Accessing the System Locally
-
-- **Web User Interface:** `http://127.0.0.1:8000/` (serves `frontend/index.html` and company branding at `/logo.png`)
-- **Interactive API Docs (Swagger UI):** `http://127.0.0.1:8000/docs`
-- **Liveness Check:** `http://127.0.0.1:8000/health`
-- **Database Readiness Check:** `http://127.0.0.1:8000/ready`
-
-When schema models change, create and review a migration before applying it:
-
-```powershell
-alembic revision --autogenerate -m "describe schema change"
-alembic upgrade head
-```
-
-## API outline
-
-All endpoints except login, health, and readiness require a bearer token. Permission names are indicated in the table.
-
-| Method | Route | Permission / purpose |
-|---|---|---|
-| `POST` | `/api/auth/login` | Public (rate-limited); issue JWT |
-| `GET` | `/api/auth/me` | Authenticated; current user profile, roles, and permissions |
-| `GET`, `POST`, `PATCH` | `/api/users`, `/api/users/{id}`, `/api/roles` | `users:manage`; user & role management |
-| `GET`, `POST`, `PATCH` | `/api/items`, `/api/items/{id}` | `catalog:read`, `catalog:write` |
-| `GET`, `POST` | `/api/categories`, `/api/departments`, `/api/units` | `catalog:read`, `catalog:write` |
-| `GET`, `POST` | `/api/unit-conversions` | `catalog:read`, `catalog:write`; item-specific UoM conversion |
-| `GET`, `POST`, `PATCH` | `/api/vendors`, `/api/vendors/{id}` | `catalog:read`, `catalog:write` |
-| `GET`, `POST`, `PATCH` | `/api/locations`, `/api/locations/{id}` | `inventory:read`, `catalog:write`; enforces `warehouse > room > shelf > bin` hierarchy |
-| `GET` | `/api/stock?item_id=&location_id=&limit=100&offset=0` | `inventory:read`; paginated |
-| `GET`, `POST` | `/api/purchase-orders`, `/api/purchase-orders/{id}` | `inventory:read`, `catalog:write`; list/inspect/create POs with lines |
-| `POST` | `/api/purchase-orders/{id}/receive` | `inventory:transact`; receive and track PO quantities |
-| `GET`, `POST` | `/api/transactions`, `/api/transactions/{id}` | `inventory:read`, `inventory:transact`; query or post receipt, issue, adjustment |
-| `GET` | `/api/movements?item_id=&location_id=&transaction_id=` | `inventory:read`; query append-only audit movements |
-| `POST` | `/api/transfers` | `inventory:transact`; atomic transfer |
-| `GET`, `POST` | `/api/requisitions`, `/api/requisitions/{id}` | `requisitions:request` or `requisitions:approve` / `requisitions:dispatch` |
-| `POST` | `/api/requisitions/{id}/approvals` | `requisitions:approve`; supervisor then store-manager decision (with optional `line_approvals`) |
-| `POST` | `/api/requisitions/{id}/dispatch` | `requisitions:dispatch` and `inventory:transact` |
-| `POST` | `/api/requisitions/{id}/confirm` | `requisitions:confirm`; requester confirmation |
-| `GET` | `/api/reports/low-stock?limit=100&offset=0` | `reports:read`; paginated |
-| `GET` | `/api/reports/valuation` | `reports:read`; active catalog standard-cost valuation and per-item breakdown |
-| `GET` | `/api/reports/consumption?days=30&limit=100&offset=0` | `reports:read`; total and average daily issue quantity, paginated |
-| `GET`, `POST` | `/api/donors`, `/api/donations`, `/api/donations/{id}` | `catalog:read`, `catalog:write`, `inventory:read`, `inventory:transact`; donor directory and in-kind receipts |
-| `GET` | `/api/donations/monthly-summary?year=2026` | `inventory:read`; monthly donation totals by catalog item for the selected year |
-| `GET`, `POST` | `/api/care-logs`, `/api/care-logs/{id}` | `inventory:read`, `inventory:transact`; timestamped daily care issues |
-| `GET`, `POST` | `/api/stock-takes`, `/api/stock-takes/{id}` | `inventory:read`, `inventory:transact`; count and reconcile stock variances |
-| `POST` | `/api/stock-takes/{id}/finalize` | `inventory:transact`; post reconciliation adjustment once |
-| `GET` | `/api/reports/monthly-ledger?year=2026&month=4&location_id=&category_id=` | `reports:read`; auditable monthly movement summary |
-| `GET` | `/api/reports/export?report_type=low-stock\|valuation\|consumption\|monthly-ledger` | `reports:read`; CSV download (consumption accepts `days`; monthly ledger accepts `year` and `month`) |
-
-Stock requests accept an optional `Idempotency-Key` header. Reusing the key with the same request returns the original transaction; reusing it for a different payload returns `409 Conflict`.
-
-### Catalog-only Excel import
-
-After applying migrations, import item names and bold section headings from a workbook sheet without importing historical quantities:
-
-```powershell
-cd backend
-python -m app.cli import-excel --file "../CONSUMABLES AND SUNDRIES APRILS 2026.xlsx" --sheet "APRIL2026"
-```
-
-The importer creates missing catalog items with deterministic `XLS-...` SKUs, uses the `each` unit (creating it if needed), maps bold worksheet section headings to categories, and skips existing item names. It does not create stock balances or ledger transactions.
-
-## Validate
+## Automated Verification (`pytest`)
 
 From the repository root:
 
 ```powershell
-python -m pytest
+python -m pytest -v
 ```
 
-Run the PostgreSQL concurrency integration test against a dedicated disposable database:
+Tests verify:
+1. Strict RBAC enforcement across `ADMIN`, `STORE_MANAGER`, and `REQUESTOR`.
+2. Automatic stock calculation (`STOCK_IN`, `STOCK_OUT`, `ADJUSTMENT`), `400 Bad Request` on insufficient stock, and concurrent `STOCK_OUT` non-negative safety.
+3. Idempotent offline replay (`200 OK` on duplicate `idempotency_key` and batch `/api/v1/transactions/sync`).
+4. Full preserved Alembic migration chain (`alembic upgrade head`).
 
-```powershell
-$env:TEST_DATABASE_URL = "postgresql+psycopg://user:password@localhost/inventory_test"
-python -m pytest -m postgresql
-Remove-Item Env:TEST_DATABASE_URL
-```
+## Lighthouse PWA & Offline Verification Steps
+
+1. Build and serve the production bundle (`docker compose up --build` or `cd frontend && npm run build && npm run preview`).
+2. Open the app in Chrome and inspect **DevTools → Application**:
+   - **Manifest**: Confirm name, icons (`192x192`, `512x512`, `180x180`), `display: standalone`, and `start_url: /`.
+   - **Service Workers**: Confirm `sw.js` is activated and controlling the page.
+   - **Cache Storage**: Confirm Workbox precache and `app-shell-assets` (`CacheFirst`) are populated.
+   - **IndexedDB**: Confirm `InventoryPWA_v2` contains `items`, `transactionQueue`, and `transactionsCache`.
+3. Sign in as `requestor@example.org` (or `manager@example.org`) and verify the top bar displays **`Online · Synced`** alongside your role badge.
+4. In **DevTools → Network**, toggle throttling to **Offline**:
+   - Confirm the top status bar switches to **`Offline Mode`**.
+   - Reload the page — verify the App Shell and cached items load immediately from Service Worker + IndexedDB.
+   - Record a `STOCK_OUT` (or `STOCK_IN`) entry — verify the live stock balance updates immediately and the badge shows **`Offline Mode · 1 queued`**.
+5. Restore network connectivity (**No throttling**):
+   - Confirm the queue drains automatically via `/api/v1/transactions/sync` (with UUIDv4 idempotency protection) and the status bar returns to **`Online · Synced`**.
+   - Verify no duplicate transactions appear in the ledger.
+6. Run **DevTools → Lighthouse** (Navigation mode, Mobile/Desktop) to verify installability, service worker registration, offline start-URL support, and accessibility scores.
