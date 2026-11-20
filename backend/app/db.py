@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncGenerator
 from functools import lru_cache
 from typing import Any
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.config import get_settings
 
@@ -32,15 +33,30 @@ def get_engine() -> AsyncEngine:
     """Create and cache the async SQLAlchemy engine tuned for Postgres or SQLite."""
     settings = get_settings()
     url = settings.async_database_url
-    # pool_pre_ping discards stale/idle connections (important for serverless DBs like Neon).
-    options: dict[str, Any] = {"pool_pre_ping": True}
+    is_serverless = bool(os.environ.get("VERCEL"))
+    options: dict[str, Any] = {}
     if url.startswith("postgresql"):
-        options.update(pool_size=5, max_overflow=10, pool_timeout=30)
+        connect_args: dict[str, Any] = {}
+        # Disable asyncpg's prepared statement cache when using PgBouncer/Neon transaction
+        # poolers or serverless environments to avoid DuplicatePreparedStatementError.
+        if "-pooler." in url or is_serverless:
+            connect_args["statement_cache_size"] = 0
+        if connect_args:
+            options["connect_args"] = connect_args
+        if is_serverless:
+            # Serverless functions should not hold idle pooled sockets across frozen invocations
+            # or separate event loops; NullPool opens and closes cleanly per checkout.
+            options["poolclass"] = NullPool
+        else:
+            # pool_pre_ping discards stale/idle connections on long-lived servers.
+            options.update(pool_pre_ping=True, pool_size=5, max_overflow=10, pool_timeout=30)
     elif ":memory:" in url:
         # StaticPool keeps a single shared connection so in-memory SQLite tables persist across sessions.
+        options["pool_pre_ping"] = True
         options["poolclass"] = StaticPool
         options["connect_args"] = {"check_same_thread": False}
     elif url.startswith("sqlite"):
+        options["pool_pre_ping"] = True
         options["connect_args"] = {"timeout": 30}
 
     engine = create_async_engine(url, **options)

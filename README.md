@@ -87,6 +87,24 @@ docker compose exec backend python -m app.cli seed-demo
 
 Open `http://localhost` (PWA) or `http://localhost:8000/docs` (OpenAPI docs).
 
+### 4. Deploy Full-Stack on Vercel (Vite PWA + FastAPI + Neon Postgres)
+
+The root `vercel.json` deploys both `frontend/` (Vite) and `backend/` (FastAPI `app.main:app`) as a single same-origin Vercel project.
+
+1. Import this GitHub repository in the **Vercel Dashboard** (leave Root Directory as repository root).
+2. Add the following **Environment Variables** in Project Settings (Production & Preview):
+   - `DATABASE_URL` — your Neon / PostgreSQL pooled connection string (e.g. `postgresql://...`)
+   - `DATABASE_URL_UNPOOLED` — your direct (non-pooler) PostgreSQL URL for Alembic migrations (optional if using Neon's `-pooler.` naming)
+   - `JWT_SECRET` — a random secret of at least 32 characters
+   - `ACCESS_TOKEN_MINUTES` — `60` (optional)
+3. Run database migrations (and optionally seed demo accounts) once against your hosted PostgreSQL database:
+   ```powershell
+   cd backend
+   .\.venv\Scripts\alembic.exe upgrade head
+   .\.venv\Scripts\python.exe -m app.cli seed-demo
+   ```
+4. Deploy via Git push (auto-deploys on `main`) or run `npx vercel --prod` from the repository root.
+
 ## Automated Verification (`pytest`)
 
 From the repository root:

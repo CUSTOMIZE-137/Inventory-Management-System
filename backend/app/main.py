@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,15 +19,23 @@ FRONTEND_LOGO = FRONTEND_DIR / "logo.png"
 
 def _cors_origins() -> list[str]:
     try:
-        return get_settings().cors_origins
+        origins = list(get_settings().cors_origins)
     except Exception:
-        return [
+        origins = [
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "http://localhost:4173",
             "http://127.0.0.1:4173",
             "http://localhost:3000",
         ]
+    # Include Vercel preview and production hostnames automatically when deployed on Vercel.
+    for env_key in ("VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"):
+        host = os.environ.get(env_key)
+        if host:
+            origin = host if host.startswith("http") else f"https://{host}"
+            if origin not in origins:
+                origins.append(origin)
+    return origins
 
 
 app = FastAPI(
