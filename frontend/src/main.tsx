@@ -303,7 +303,7 @@ function AppShell() {
                         type="email"
                         autoComplete="email"
                         required
-                        placeholder="manager@example.org"
+                        placeholder="you@example.org"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                       />
@@ -325,46 +325,6 @@ function AppShell() {
                     </Button>
                   </form>
 
-                  <div className="border-t border-zinc-800 pt-4">
-                    <p className="mb-2 text-xs font-medium text-zinc-400">
-                      Demo Role Quick-Fill (password: AdminPassword123!)
-                    </p>
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("admin@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        ADMIN
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("manager@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        MANAGER
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("requestor@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        REQUESTOR
-                      </Button>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
             </div>
