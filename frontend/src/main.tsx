@@ -275,7 +275,7 @@ function AppShell() {
             <div className="mx-auto mt-6 max-w-md">
               <div className="mb-5 flex justify-center">
                 <img
-                  src="/brand-logo.png?v=2"
+                  src="/login-logo.png"
                   alt="Inventory Management System"
                   className="h-36 w-auto object-contain drop-shadow-lg"
                 />
@@ -283,10 +283,6 @@ function AppShell() {
               <Card>
                 <CardHeader className="text-center">
                   <CardTitle className="text-xl">Sign in to Stock Control</CardTitle>
-                  <CardDescription>
-                    Your dashboard adapts automatically to your assigned role (ADMIN, STORE_MANAGER,
-                    or REQUESTOR).
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   {authError && (
