@@ -2,6 +2,7 @@ import type { components } from "./schema";
 
 export type UserRole = components["schemas"]["UserRole"];
 export type TransactionType = components["schemas"]["TransactionType"];
+export type StockSource = components["schemas"]["StockSource"];
 export type UserRead = components["schemas"]["UserRead"];
 export type TokenResponse = components["schemas"]["TokenResponse"];
 export type UserCreate = components["schemas"]["UserCreate"];

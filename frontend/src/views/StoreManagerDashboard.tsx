@@ -80,6 +80,7 @@ export function StoreManagerDashboard({
   // Stock-In modal
   const [stockInItem, setStockInItem] = useState<ItemRead | null>(null);
   const [stockInQty, setStockInQty] = useState("10");
+  const [stockSource, setStockSource] = useState<"purchased" | "donated">("purchased");
   const [stockInNotes, setStockInNotes] = useState("");
   const [submittingTx, setSubmittingTx] = useState(false);
 
@@ -210,10 +211,12 @@ export function StoreManagerDashboard({
         item: stockInItem,
         transaction_type: "STOCK_IN",
         quantity: qty,
+        stock_source: stockSource,
         notes: stockInNotes || "Incoming stock intake",
       });
       setStockInItem(null);
       setStockInQty("10");
+      setStockSource("purchased");
       setStockInNotes("");
       await refreshData();
       if (online) {
@@ -281,6 +284,7 @@ export function StoreManagerDashboard({
       setSearch(matched.sku);
       setStockInItem(matched);
       setStockInQty("10");
+      setStockSource("purchased");
       setStockInNotes("");
       setNotice(`Scanned ${matched.name} (${matched.sku}) — ready to log STOCK_IN.`);
     } else {
@@ -776,6 +780,18 @@ export function StoreManagerDashboard({
                 value={stockInQty}
                 onChange={(e) => setStockInQty(e.target.value)}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="stock-source">Stock Source</Label>
+              <Select
+                id="stock-source"
+                value={stockSource}
+                onChange={(e) => setStockSource(e.target.value as "purchased" | "donated")}
+              >
+                <option value="purchased">Purchased</option>
+                <option value="donated">Donated</option>
+              </Select>
             </div>
 
             <div className="space-y-1.5">

@@ -35,6 +35,7 @@ export async function enqueueOfflineTransaction(input: {
   transaction_type: TransactionType;
   quantity?: number;
   counted_stock?: number;
+  stock_source?: "purchased" | "donated" | null;
   notes?: string;
 }): Promise<QueuedTransaction> {
   const previous = Number(input.item.current_stock);
@@ -54,6 +55,7 @@ export async function enqueueOfflineTransaction(input: {
     item_name: input.item.name,
     item_unit: input.item.unit,
     transaction_type: input.transaction_type,
+    stock_source: input.stock_source ?? (input.transaction_type === "STOCK_IN" ? "purchased" : null),
     quantity: input.quantity,
     counted_stock: input.counted_stock,
     previous_stock_preview: previous,
@@ -102,6 +104,7 @@ export async function syncTransactionQueue(): Promise<SyncSummary> {
     idempotency_key: entry.idempotency_key,
     item_id: entry.item_id,
     transaction_type: entry.transaction_type,
+    stock_source: entry.stock_source ?? null,
     quantity: entry.transaction_type === "ADJUSTMENT" ? null : entry.quantity ?? null,
     counted_stock: entry.transaction_type === "ADJUSTMENT" ? entry.counted_stock ?? null : null,
     notes: entry.notes ?? null,

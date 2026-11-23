@@ -80,10 +80,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Items */
+        /**
+         * List Items
+         * @description List catalog items with optional search, category, low-stock, and incremental sync filters.
+         */
         get: operations["list_items_api_v1_items_get"];
         put?: never;
-        /** Create Item */
+        /**
+         * Create Item
+         * @description Register a new catalog SKU (STORE_MANAGER only).
+         *
+         *     New items always start at current_stock = 0; opening stock must be recorded as a
+         *     STOCK_IN ledger transaction so every unit on hand is auditable.
+         */
         post: operations["create_item_api_v1_items_post"];
         delete?: never;
         options?: never;
@@ -98,7 +107,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Lookup Item By Code */
+        /**
+         * Lookup Item By Code
+         * @description Resolve a scanned barcode or typed SKU (case-insensitive) to a catalog item.
+         */
         get: operations["lookup_item_by_code_api_v1_items_lookup__code__get"];
         put?: never;
         post?: never;
@@ -136,7 +148,13 @@ export interface paths {
         /** List Transactions */
         get: operations["list_transactions_api_v1_transactions_get"];
         put?: never;
-        /** Create Transaction */
+        /**
+         * Create Transaction
+         * @description Record a single stock movement atomically.
+         *
+         *     Returns 201 Created for a new ledger entry, or 200 OK when an existing
+         *     idempotency_key is replayed without re-applying the balance change.
+         */
         post: operations["create_transaction_api_v1_transactions_post"];
         delete?: never;
         options?: never;
@@ -153,7 +171,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Sync Transactions */
+        /**
+         * Sync Transactions
+         * @description Replay a chronological batch of offline-queued transactions.
+         *
+         *     Each entry is isolated: validation or insufficient-stock failures mark only that
+         *     item as 'rejected' so subsequent valid transactions in the batch still commit.
+         */
         post: operations["sync_transactions_api_v1_transactions_sync_post"];
         delete?: never;
         options?: never;
@@ -185,7 +209,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Health */
+        /**
+         * Health
+         * @description Lightweight liveness probe (does not query the database).
+         */
         get: operations["health_health_get"];
         put?: never;
         post?: never;
@@ -202,7 +229,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Readiness */
+        /**
+         * Readiness
+         * @description Readiness probe verifying active database connectivity.
+         */
         get: operations["readiness_ready_get"];
         put?: never;
         post?: never;
@@ -325,7 +355,10 @@ export interface components {
             token_type: string;
             user: components["schemas"]["UserRead"];
         };
-        /** TransactionCreate */
+        /**
+         * TransactionCreate
+         * @description Payload for recording a single ledger event (or one entry inside an offline sync batch).
+         */
         TransactionCreate: {
             /**
              * Idempotency Key
@@ -335,6 +368,8 @@ export interface components {
             /** Item Id */
             item_id: string;
             transaction_type: components["schemas"]["TransactionType"];
+            /** Stock Source */
+            stock_source?: components["schemas"]["StockSource"] | null;
             /** Quantity */
             quantity?: number | string | null;
             /** Counted Stock */
@@ -367,6 +402,7 @@ export interface components {
             user_email: string;
             user_role: components["schemas"]["UserRole"];
             transaction_type: components["schemas"]["TransactionType"];
+            stock_source?: components["schemas"]["StockSource"] | null;
             /** Quantity */
             quantity: number;
             /** Previous Stock */
@@ -415,9 +451,12 @@ export interface components {
         };
         /**
          * TransactionType
+         * @description Ledger event types supported by the append-only stock_transactions table.
          * @enum {string}
          */
         TransactionType: "STOCK_IN" | "STOCK_OUT" | "ADJUSTMENT";
+        /** StockSource */
+        StockSource: "purchased" | "donated";
         /** UserCreate */
         UserCreate: {
             /** Full Name */
@@ -448,6 +487,10 @@ export interface components {
         };
         /**
          * UserRole
+         * @description System-wide RBAC roles with strict separation of duties:
+         *     - ADMIN: user lifecycle governance and read-only global audit oversight.
+         *     - STORE_MANAGER: catalog administration, STOCK_IN intake, and ADJUSTMENT reconciliations.
+         *     - REQUESTOR: catalog lookup and STOCK_OUT take-outs.
          * @enum {string}
          */
         UserRole: "ADMIN" | "STORE_MANAGER" | "REQUESTOR";
@@ -484,134 +527,498 @@ export interface components {
 export type $defs = Record<string, never>;
 export interface operations {
     login_api_v1_auth_login_post: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["LoginRequest"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["TokenResponse"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     get_me_api_v1_auth_me_get: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["UserRead"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"];
+                };
+            };
         };
     };
     list_users_api_v1_users_get: {
-        parameters: { query?: { limit?: number; offset?: number }; header?: never; path?: never; cookie?: never };
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["UserRead"][] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_user_api_v1_users_post: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["UserCreate"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserCreate"];
+            };
+        };
         responses: {
-            201: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["UserRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     update_user_api_v1_users__user_id__patch: {
-        parameters: { query?: never; header?: never; path: { user_id: string }; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["UserUpdate"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserUpdate"];
+            };
+        };
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["UserRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     list_items_api_v1_items_get: {
         parameters: {
-            query?: { q?: string | null; category?: string | null; low_stock_only?: boolean; updated_since?: string | null; limit?: number; offset?: number };
-            header?: never; path?: never; cookie?: never;
+            query?: {
+                q?: string | null;
+                category?: string | null;
+                low_stock_only?: boolean;
+                updated_since?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
         };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["ItemRead"][] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_item_api_v1_items_post: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["ItemCreate"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemCreate"];
+            };
+        };
         responses: {
-            201: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["ItemRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     lookup_item_by_code_api_v1_items_lookup__code__get: {
-        parameters: { query?: never; header?: never; path: { code: string }; cookie?: never };
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["ItemRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     get_item_api_v1_items__item_id__get: {
-        parameters: { query?: never; header?: never; path: { item_id: string }; cookie?: never };
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["ItemRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     update_item_api_v1_items__item_id__patch: {
-        parameters: { query?: never; header?: never; path: { item_id: string }; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["ItemUpdate"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemUpdate"];
+            };
+        };
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["ItemRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     list_transactions_api_v1_transactions_get: {
         parameters: {
-            query?: { item_id?: string | null; user_id?: string | null; transaction_type?: components["schemas"]["TransactionType"] | null; limit?: number; offset?: number };
-            header?: never; path?: never; cookie?: never;
+            query?: {
+                item_id?: string | null;
+                user_id?: string | null;
+                transaction_type?: components["schemas"]["TransactionType"] | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
         };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["TransactionRead"][] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_transaction_api_v1_transactions_post: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["TransactionCreate"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransactionCreate"];
+            };
+        };
         responses: {
-            201: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["TransactionRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     sync_transactions_api_v1_transactions_sync_post: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
-        requestBody: { content: { "application/json": components["schemas"]["TransactionSyncRequest"] } };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransactionSyncRequest"];
+            };
+        };
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["TransactionSyncResponse"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionSyncResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     audit_summary_api_v1_audit_summary_get: {
-        parameters: { query?: { recent_limit?: number }; header?: never; path?: never; cookie?: never };
+        parameters: {
+            query?: {
+                recent_limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["AuditSummaryRead"] } };
-            422: { headers: { [name: string]: unknown }; content: { "application/json": components["schemas"]["HTTPValidationError"] } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditSummaryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     health_health_get: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": { [key: string]: string } } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
         };
     };
     readiness_ready_get: {
-        parameters: { query?: never; header?: never; path?: never; cookie?: never };
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: { headers: { [name: string]: unknown }; content: { "application/json": { [key: string]: string } } };
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
         };
     };
 }

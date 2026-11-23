@@ -51,6 +51,13 @@ class TransactionType(str, Enum):
     ADJUSTMENT = "ADJUSTMENT"
 
 
+class StockSource(str, Enum):
+    """How inventory units entered the single stock location."""
+
+    PURCHASED = "purchased"
+    DONATED = "donated"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -150,6 +157,11 @@ class StockTransaction(Base):
     transaction_type: Mapped[TransactionType] = mapped_column(
         SAEnum(TransactionType, name="transaction_type", native_enum=True),
         nullable=False,
+        index=True,
+    )
+    stock_source: Mapped[StockSource | None] = mapped_column(
+        SAEnum(StockSource, name="stock_source", native_enum=True),
+        nullable=True,
         index=True,
     )
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3), nullable=False)

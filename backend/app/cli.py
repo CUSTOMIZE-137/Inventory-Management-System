@@ -1,16 +1,28 @@
 import argparse
 import asyncio
-from decimal import Decimal
 from getpass import getpass
-from uuid import uuid5, NAMESPACE_URL
-
 from sqlalchemy import select
 
-from app.db import SessionLocal, get_engine
-from app.models import Base, Item, TransactionType, User, UserRole
-from app.schemas import TransactionCreate
+from app.db import get_engine, get_sessionmaker
+from app.models import User, UserRole
 from app.security import hash_password
-from app.services.inventory import record_stock_transaction
+
+
+def _prompt_non_empty(label: str) -> str:
+    value = input(f"{label}: ").strip()
+    if not value:
+        raise ValueError(f"{label} cannot be empty")
+    return value
+
+
+def _prompt_password() -> str:
+    secret = getpass("Password (minimum 8 characters): ")
+    if len(secret) < 8:
+        raise ValueError("Password must contain at least 8 characters")
+    confirm = getpass("Confirm password: ")
+    if secret != confirm:
+        raise ValueError("Passwords do not match")
+    return secret
 
 
 async def create_user_account(
@@ -19,120 +31,106 @@ async def create_user_account(
     full_name: str,
     role: UserRole,
     password: str | None = None,
-) -> None:
-    secret = password or getpass("Password (minimum 8 characters): ")
+) -> User:
+    normalized_email = email.strip().lower()
+    normalized_name = full_name.strip()
+    if not normalized_name:
+        raise ValueError("Full name cannot be empty")
+    if "@" not in normalized_email or " " in normalized_email:
+        raise ValueError("Please provide a valid email address")
+
+    secret = password if password is not None else _prompt_password()
     if len(secret) < 8:
         raise ValueError("Password must contain at least 8 characters")
 
-    async with SessionLocal() as session:
-        async with session.begin():
-            existing = await session.scalar(select(User.id).where(User.email == email.lower()))
-            if existing is not None:
-                raise ValueError("An account with that email already exists")
-            session.add(
-                User(
-                    full_name=full_name.strip(),
-                    email=email.strip().lower(),
+    session_factory = get_sessionmaker()
+    try:
+        async with session_factory() as session:
+            async with session.begin():
+                existing = await session.scalar(
+                    select(User.id).where(User.email == normalized_email)
+                )
+                if existing is not None:
+                    raise ValueError(f"An account with email '{normalized_email}' already exists")
+                user = User(
+                    full_name=normalized_name,
+                    email=normalized_email,
                     hashed_password=hash_password(secret),
                     role=role,
                     is_active=True,
                 )
-            )
+                session.add(user)
+                await session.flush()
+                return user
+    finally:
+        await get_engine().dispose()
 
 
-async def seed_demo() -> None:
-    """Idempotently seed default demo accounts (one per RBAC role) and sample store items."""
-    engine = get_engine()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    demo_password = "AdminPassword123!"
-    accounts = [
-        ("admin@example.org", "System Administrator", UserRole.ADMIN),
-        ("manager@example.org", "Store Manager", UserRole.STORE_MANAGER),
-        ("requestor@example.org", "Store Requestor", UserRole.REQUESTOR),
-    ]
-
-    async with SessionLocal() as session:
-        async with session.begin():
-            manager_user: User | None = None
-            for email, full_name, role in accounts:
-                user = await session.scalar(select(User).where(User.email == email))
-                if user is None:
-                    user = User(
-                        full_name=full_name,
-                        email=email,
-                        hashed_password=hash_password(demo_password),
-                        role=role,
-                        is_active=True,
-                    )
-                    session.add(user)
-                    await session.flush()
-                if role == UserRole.STORE_MANAGER:
-                    manager_user = user
-
-            sample_items = [
-                ("MED-GLV-M", "6001000000012", "Nitrile Examination Gloves (Medium)", "Medical Supplies", "boxes", 10, Decimal("28")),
-                ("HYG-SAN-500", "6001000000029", "Hand Sanitizer Gel 500ml", "Hygiene", "pcs", 8, Decimal("6")),
-                ("OFF-PPR-A4", "6001000000036", "A4 Copy Paper 80gsm", "Stationery", "boxes", 5, Decimal("14")),
-                ("KIT-RIC-25", "6001000000043", "Long Grain Rice", "Kitchen", "kg", 20, Decimal("15")),
-                ("CLN-DET-5L", "6001000000050", "Liquid Disinfectant 5L", "Cleaning", "liters", 10, Decimal("25")),
-            ]
-
-            for sku, barcode, name, category, unit, reorder_level, initial_qty in sample_items:
-                item = await session.scalar(select(Item).where(Item.sku == sku))
-                if item is None:
-                    item = Item(
-                        sku=sku,
-                        barcode=barcode,
-                        name=name,
-                        category=category,
-                        unit=unit,
-                        reorder_level=reorder_level,
-                    )
-                    session.add(item)
-                    await session.flush()
-                    if manager_user is not None and initial_qty > 0:
-                        # Seed opening stock through the ledger with a deterministic uuid5 key
-                        # so re-running seed-demo can never double-credit inventory.
-                        await record_stock_transaction(
-                            session,
-                            user=manager_user,
-                            payload=TransactionCreate(
-                                idempotency_key=uuid5(NAMESPACE_URL, f"seed:{sku}"),
-                                item_id=item.id,
-                                transaction_type=TransactionType.STOCK_IN,
-                                quantity=initial_qty,
-                                notes="Initial store opening stock",
-                            ),
-                        )
+async def create_superuser(
+    *,
+    email: str,
+    full_name: str,
+    password: str | None = None,
+) -> User:
+    """Create an active ADMIN superuser account."""
+    return await create_user_account(
+        email=email,
+        full_name=full_name,
+        role=UserRole.ADMIN,
+        password=password,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inventory Management System CLI")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("seed-demo", help="Seed default ADMIN, STORE_MANAGER, REQUESTOR accounts and sample items")
+
+    superuser_parser = commands.add_parser(
+        "create-superuser",
+        help="Create an administrator (ADMIN) superuser account (interactive if flags are omitted)",
+    )
+    superuser_parser.add_argument("--email", required=False, help="Administrator email address")
+    superuser_parser.add_argument("--name", required=False, help="Administrator full name")
+    superuser_parser.add_argument(
+        "--password",
+        required=False,
+        help="Password (omit to enter securely via interactive prompt)",
+    )
 
     user_parser = commands.add_parser("create-user", help="Create a new user account")
-    user_parser.add_argument("--email", required=True)
-    user_parser.add_argument("--name", required=True)
+    user_parser.add_argument("--email", required=False, help="User email address")
+    user_parser.add_argument("--name", required=False, help="User full name")
     user_parser.add_argument("--role", required=True, choices=[r.value for r in UserRole])
-    user_parser.add_argument("--password", required=False)
+    user_parser.add_argument(
+        "--password",
+        required=False,
+        help="Password (omit to enter securely via interactive prompt)",
+    )
 
     args = parser.parse_args()
-    if args.command == "seed-demo":
-        asyncio.run(seed_demo())
-        print("Demo accounts and sample inventory seeded.")
+    if args.command == "create-superuser":
+        full_name = args.name or _prompt_non_empty("Full name")
+        email = args.email or _prompt_non_empty("Email address")
+        user = asyncio.run(
+            create_superuser(
+                email=email,
+                full_name=full_name,
+                password=args.password,
+            )
+        )
+        print(f"Created ADMIN superuser: {user.full_name} <{user.email}>")
     elif args.command == "create-user":
-        asyncio.run(
+        full_name = args.name or _prompt_non_empty("Full name")
+        email = args.email or _prompt_non_empty("Email address")
+        user = asyncio.run(
             create_user_account(
-                email=args.email,
-                full_name=args.name,
+                email=email,
+                full_name=full_name,
                 role=UserRole(args.role),
                 password=args.password,
             )
         )
-        print(f"Created {args.role} user: {args.email}")
+        print(f"Created {user.role.value} user: {user.full_name} <{user.email}>")
 
 
 if __name__ == "__main__":

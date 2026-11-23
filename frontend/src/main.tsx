@@ -28,7 +28,7 @@ import { formatRole } from "./lib/utils";
 import { AdminDashboard } from "./views/AdminDashboard";
 import { RequestorDashboard } from "./views/RequestorDashboard";
 import { StoreManagerDashboard } from "./views/StoreManagerDashboard";
-import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from "./components/ui/primitives";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "./components/ui/primitives";
 import "./style.css";
 
 const queryClient = new QueryClient({
@@ -282,11 +282,7 @@ function AppShell() {
               </div>
               <Card>
                 <CardHeader className="text-center">
-                  <CardTitle className="text-xl">Sign in to Stock Control</CardTitle>
-                  <CardDescription>
-                    Your dashboard adapts automatically to your assigned role (ADMIN, STORE_MANAGER,
-                    or REQUESTOR).
-                  </CardDescription>
+                  <CardTitle className="text-xl">Sign in to Inventory</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   {authError && (
@@ -303,7 +299,7 @@ function AppShell() {
                         type="email"
                         autoComplete="email"
                         required
-                        placeholder="manager@example.org"
+                        placeholder="Enter your email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                       />
@@ -324,47 +320,6 @@ function AppShell() {
                       {signingIn ? "Signing in..." : "Sign In"}
                     </Button>
                   </form>
-
-                  <div className="border-t border-zinc-800 pt-4">
-                    <p className="mb-2 text-xs font-medium text-zinc-400">
-                      Demo Role Quick-Fill (password: AdminPassword123!)
-                    </p>
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("admin@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        ADMIN
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("manager@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        MANAGER
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEmail("requestor@example.org");
-                          setPassword("AdminPassword123!");
-                        }}
-                      >
-                        REQUESTOR
-                      </Button>
-                    </div>
-                  </div>
                 </CardContent>
               </Card>
             </div>

@@ -48,14 +48,11 @@ $env:DATABASE_URL = "sqlite+aiosqlite:///./inventory_dev.db"
 $env:JWT_SECRET = "local-dev-secret-key-with-at-least-32-chars"
 
 .\.venv\Scripts\alembic.exe upgrade head
-.\.venv\Scripts\python.exe -m app.cli seed-demo
+.\.venv\Scripts\python.exe -m app.cli create-superuser
 .\.venv\Scripts\uvicorn.exe app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-**Seeded Demo Accounts** (password: `AdminPassword123!`):
-- `admin@example.org` (`ADMIN`)
-- `manager@example.org` (`STORE_MANAGER`)
-- `requestor@example.org` (`REQUESTOR`)
+No demo accounts are shipped. Run `python -m app.cli create-superuser` interactively (or pass `--email` and `--name`) to create the initial `ADMIN` superuser account.
 
 ### 2. Frontend (React 19 + Vite PWA)
 
@@ -79,10 +76,10 @@ Runs PostgreSQL 16, FastAPI (`:8000`), and Nginx serving the built PWA (`:80`):
 docker compose up --build
 ```
 
-Seed demo accounts inside the running backend container:
+Create the initial administrator inside the running backend container:
 
 ```powershell
-docker compose exec backend python -m app.cli seed-demo
+docker compose exec backend python -m app.cli create-superuser
 ```
 
 Open `http://localhost` (PWA) or `http://localhost:8000/docs` (OpenAPI docs).
@@ -97,11 +94,11 @@ The root `vercel.json` deploys both `frontend/` (Vite) and `backend/` (FastAPI `
    - `DATABASE_URL_UNPOOLED` — your direct (non-pooler) PostgreSQL URL for Alembic migrations (optional if using Neon's `-pooler.` naming)
    - `JWT_SECRET` — a random secret of at least 32 characters
    - `ACCESS_TOKEN_MINUTES` — `60` (optional)
-3. Run database migrations (and optionally seed demo accounts) once against your hosted PostgreSQL database:
+3. Run database migrations and create the initial administrator once against your hosted PostgreSQL database:
    ```powershell
    cd backend
    .\.venv\Scripts\alembic.exe upgrade head
-   .\.venv\Scripts\python.exe -m app.cli seed-demo
+   .\.venv\Scripts\python.exe -m app.cli create-superuser
    ```
 4. Deploy via Git push (auto-deploys on `main`) or run `npx vercel --prod` from the repository root.
 
@@ -127,7 +124,7 @@ Tests verify:
    - **Service Workers**: Confirm `sw.js` is activated and controlling the page.
    - **Cache Storage**: Confirm Workbox precache and `app-shell-assets` (`CacheFirst`) are populated.
    - **IndexedDB**: Confirm `InventoryPWA_v2` contains `items`, `transactionQueue`, and `transactionsCache`.
-3. Sign in as `requestor@example.org` (or `manager@example.org`) and verify the top bar displays **`Online · Synced`** alongside your role badge.
+3. Sign in with the administrator or staff account created through the CLI and verify the top bar displays **`Online · Synced`** alongside the role badge.
 4. In **DevTools → Network**, toggle throttling to **Offline**:
    - Confirm the top status bar switches to **`Offline Mode`**.
    - Reload the page — verify the App Shell and cached items load immediately from Service Worker + IndexedDB.

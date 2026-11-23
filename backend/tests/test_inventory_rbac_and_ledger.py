@@ -6,8 +6,9 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import AsyncClient
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
+from app.cli import create_superuser
 from app.config import get_settings
 
 
@@ -517,6 +518,7 @@ def test_alembic_upgrade_head_from_empty_database(tmp_path: Path, monkeypatch: p
         "item_id",
         "user_id",
         "transaction_type",
+        "stock_source",
         "quantity",
         "previous_stock",
         "remaining_stock",
@@ -525,3 +527,94 @@ def test_alembic_upgrade_head_from_empty_database(tmp_path: Path, monkeypatch: p
     } == {c["name"] for c in inspector.get_columns("stock_transactions")}
     eng.dispose()
     get_settings.cache_clear()
+
+
+def test_alembic_migration_removes_legacy_demo_users_and_preserves_real_users(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db_file = tmp_path / "demo_cleanup_test.db"
+    sync_url = f"sqlite+pysqlite:///{db_file.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", sync_url)
+    monkeypatch.setenv("JWT_SECRET", "test-secret-key-for-inventory-system-at-least-32-chars")
+    get_settings.cache_clear()
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "migrations"))
+
+    # Upgrade to the revision right before demo cleanup and insert legacy demo rows + a real admin.
+    command.upgrade(cfg, "7e3c1a8d5f20")
+    eng = create_engine(sync_url)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO users (id, full_name, email, hashed_password, role, is_active, created_at) "
+                "VALUES "
+                "('u-demo-admin', 'System Administrator', 'admin@example.org', 'hash', 'ADMIN', 1, CURRENT_TIMESTAMP), "
+                "('u-demo-mgr', 'Store Manager', 'manager@example.org', 'hash', 'STORE_MANAGER', 1, CURRENT_TIMESTAMP), "
+                "('u-demo-req', 'Store Requestor', 'requestor@example.org', 'hash', 'REQUESTOR', 1, CURRENT_TIMESTAMP), "
+                "('u-real-admin', 'Real Superuser', 'real.admin@company.org', 'hash', 'ADMIN', 1, CURRENT_TIMESTAMP)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO items (id, sku, barcode, name, category, unit, current_stock, reorder_level, updated_at) "
+                "VALUES "
+                "('i-demo', 'MED-GLV-M', '6001000000012', 'Nitrile Gloves', 'Medical', 'boxes', 10, 5, CURRENT_TIMESTAMP)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO stock_transactions "
+                "(id, idempotency_key, item_id, user_id, transaction_type, stock_source, quantity, previous_stock, remaining_stock, notes, created_at) "
+                "VALUES "
+                "('tx-demo', 'idem-demo-1', 'i-demo', 'u-demo-mgr', 'STOCK_IN', 'purchased', 10, 0, 10, 'Initial store opening stock', CURRENT_TIMESTAMP)"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+
+    with eng.connect() as conn:
+        emails = [row[0] for row in conn.execute(text("SELECT email FROM users ORDER BY email"))]
+        item_count = conn.execute(text("SELECT COUNT(*) FROM items")).scalar_one()
+        tx_count = conn.execute(text("SELECT COUNT(*) FROM stock_transactions")).scalar_one()
+
+    assert emails == ["real.admin@company.org"]
+    assert item_count == 0
+    assert tx_count == 0
+
+    eng.dispose()
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_cli_create_superuser_provisions_admin_and_blocks_duplicates(client: AsyncClient):
+    created = await create_superuser(
+        email="  Super.Admin@Company.org ",
+        full_name="Super Admin",
+        password="StrongPassword123!",
+    )
+    assert created.email == "super.admin@company.org"
+    assert created.role.value == "ADMIN"
+    assert created.is_active is True
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "super.admin@company.org", "password": "StrongPassword123!"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["role"] == "ADMIN"
+
+    with pytest.raises(ValueError, match="already exists"):
+        await create_superuser(
+            email="super.admin@company.org",
+            full_name="Duplicate Admin",
+            password="StrongPassword123!",
+        )
+
+    with pytest.raises(ValueError, match="at least 8 characters"):
+        await create_superuser(
+            email="short@company.org",
+            full_name="Short Pass",
+            password="short",
+        )

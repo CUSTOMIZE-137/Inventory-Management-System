@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
-from app.models import TransactionType, UserRole
+from app.models import StockSource, TransactionType, UserRole
 
 
 def _serialize_stock_number(value: Decimal) -> int | float:
@@ -117,6 +117,7 @@ class TransactionCreate(BaseModel):
     transaction_type: TransactionType
     quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=3)
     counted_stock: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=3)
+    stock_source: StockSource | None = None
     notes: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
@@ -130,9 +131,14 @@ class TransactionCreate(BaseModel):
                 raise ValueError("quantity must be a positive number for STOCK_IN and STOCK_OUT")
             if self.counted_stock is not None:
                 raise ValueError("counted_stock is only valid for ADJUSTMENT transactions")
+            if self.transaction_type == TransactionType.STOCK_IN and self.stock_source is None:
+                self.stock_source = StockSource.PURCHASED
+            elif self.transaction_type == TransactionType.STOCK_OUT:
+                self.stock_source = None
         elif self.transaction_type == TransactionType.ADJUSTMENT:
             if self.counted_stock is None:
                 raise ValueError("counted_stock is required for ADJUSTMENT transactions")
+            self.stock_source = None
         return self
 
 
@@ -148,6 +154,7 @@ class TransactionRead(BaseModel):
     user_email: str
     user_role: UserRole
     transaction_type: TransactionType
+    stock_source: StockSource | None = None
     quantity: StockNumber
     previous_stock: StockNumber
     remaining_stock: StockNumber

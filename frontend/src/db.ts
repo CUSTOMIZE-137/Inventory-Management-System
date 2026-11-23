@@ -8,6 +8,7 @@ export interface QueuedTransaction {
   item_name: string;
   item_unit: string;
   transaction_type: TransactionType;
+  stock_source?: "purchased" | "donated" | null;
   quantity?: number;
   counted_stock?: number;
   previous_stock_preview: number;
